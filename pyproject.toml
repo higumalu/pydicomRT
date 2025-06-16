@@ -1,0 +1,22 @@
+[project]
+name = "pydicomrt"
+version = "0.3.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Higumalu", email = "higuma.lu@gmail.com" }
+]
+requires-python = ">=3.8"
+dependencies = [
+    "pydicom>=2.0.0",
+    "numpy==1.26.4",
+    "opencv-python>=4.10.0",
+    "scipy>=1.10.3",
+]
+
+[project.scripts]
+pydicomrt = "pydicomrt:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
