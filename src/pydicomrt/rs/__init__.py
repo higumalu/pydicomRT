@@ -14,6 +14,11 @@ from .parser import (
     get_roi_number_to_name
 )
 
+from .checker import (
+    is_rtstruct_matching_series,
+    check_rtstruct
+)
+
 from .rs_to_volume import (
     rtstruct_to_mask_dict,
     calc_image_series_affine_mapping,
@@ -30,6 +35,9 @@ __all__ = [
 
     'get_contour_dict',
     'get_roi_number_to_name',
+
+    'is_rtstruct_matching_series',
+    'check_rtstruct',
 
     'rtstruct_to_mask_dict',
     'calc_image_series_affine_mapping',
