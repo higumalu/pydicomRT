@@ -4,6 +4,7 @@ Check RTSTRUCT dataset Class Information Object Definition (IOD)
 Author: Higumalu
 Date: 2025-06-13
 """
+from pydicom.dataset import Dataset
 
 from pydicomrt.utils.validate_dcm_info import check_iod, ValidationError
 from .rs_ds_iod import RT_STRUCTURE_SET_IOD
@@ -26,7 +27,7 @@ RS_VALIDATORS_MAP = {
 }
 
 
-def check_rs_iod(rs_ds):
+def check_rs_iod(rs_ds: Dataset) -> dict:
     result_dict = {
         "result": True,
         "content": []
@@ -40,3 +41,39 @@ def check_rs_iod(rs_ds):
 
     return result_dict
 
+# --------------------------------------------------------------------------------------------------------------------- #
+
+def is_rtstruct_matching_series(
+    rs_ds: Dataset,
+    series_ds_list: list) -> bool:
+    """
+    Check if the RTSTRUCT dataset is matching the series dataset
+    :param rs_ds: RTSTRUCT dataset
+    :param series_ds_list: list of series dataset
+    :return: True if matching, False otherwise
+    """
+    status = 0
+    first_slice = series_ds_list[0]
+    if rs_ds.FrameOfReferenceUID == first_slice.FrameOfReferenceUID:
+        status += 1
+
+    try:
+        rs_ds_series_uid_list = rs_ds.ReferencedFrameOfReferenceSequence[0].RTReferencedSeriesSequence[0].SeriesInstanceUID
+        if rs_ds_series_uid_list == first_slice.SeriesInstanceUID:
+            status += 1
+    except Exception:
+        pass
+
+    try:
+        sop_instance_uid_list = [ds.SOPInstanceUID for ds in series_ds_list]
+        for roi_contour_sequence in rs_ds.ROIContourSequence:
+            contour_sequence = roi_contour_sequence.ContourSequence
+            for contour in contour_sequence:
+                for contour_image_sequence in contour.ContourImageSequence:
+                    if contour_image_sequence.ReferencedSOPInstanceUID not in sop_instance_uid_list:
+                        status = 0
+                        break
+    except Exception:
+        pass
+
+    return status > 0
