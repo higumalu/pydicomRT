@@ -16,7 +16,7 @@ from .parser import (
 
 from .checker import (
     is_rtstruct_matching_series,
-    check_rtstruct
+    check_rs_iod
 )
 
 from .rs_to_volume import (
@@ -37,7 +37,7 @@ __all__ = [
     'get_roi_number_to_name',
 
     'is_rtstruct_matching_series',
-    'check_rtstruct',
+    'check_rs_iod',
 
     'rtstruct_to_mask_dict',
     'calc_image_series_affine_mapping',
