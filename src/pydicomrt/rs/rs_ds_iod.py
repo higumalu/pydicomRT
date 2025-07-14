@@ -35,6 +35,7 @@ RT_STRUCTURE_SET_IOD = {
             "ReferencedROINumber": {"type": int},
             "ROIDisplayColor": {},
             "ContourSequence": {
+                "optional": True,
                 "submap": {
                     "ContourImageSequence": {
                         "submap": {

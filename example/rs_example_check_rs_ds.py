@@ -26,6 +26,7 @@ roi_inter_type = rs_ds.RTROIObservationsSequence[0].RTROIInterpretedType
 print(type(roi_inter_type))
 print(len(roi_inter_type))
 
-rs_ds = pydicom.dcmread("example/data/RV_002/RS/4021.dcm")
+# rs_ds = pydicom.dcmread("example/data/RV_002/RS/4021.dcm")
+rs_ds = pydicom.dcmread("example/data/v3WB_RSParserTest/RS1/RS_Eclipse.dcm")
 print(check_rs_iod(rs_ds))
 print(is_rtstruct_matching_series(rs_ds, ds_list))

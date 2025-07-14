@@ -39,7 +39,7 @@ def add_required_elements_to_ds(ds: FileDataset):
     # Append data elements required by the DICOM standarad
     ds.SpecificCharacterSet = "ISO_IR 192"
     ds.InstanceCreationDate = dt.strftime("%Y%m%d")
-    ds.InstanceCreationTime = dt.strftime("%H%M%S.%f")
+    ds.InstanceCreationTime = dt.strftime("%H%M%S")
     ds.StructureSetLabel = "RS_" + dt.strftime("%Y%m%d")
     ds.StructureSetDate = dt.strftime("%Y%m%d")
     ds.StructureSetTime = dt.strftime("%H%M%S.%f")

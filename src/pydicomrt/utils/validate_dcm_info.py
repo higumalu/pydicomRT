@@ -61,8 +61,11 @@ def check_iod(
         loc = path or "root"
 
         if elem is None:
-            errors.append(f"Missing {key} in {loc}")
-            continue
+            if cfg.get("optional", False):
+                continue
+            else:
+                errors.append(f"Missing {key} in {loc}")
+                continue
 
         val = elem.value
 
@@ -70,6 +73,11 @@ def check_iod(
         expected_type = cfg.get("type")
         if expected_type and not isinstance(val, expected_type):
             errors.append(f"{key} in {loc} should be {expected_type.__name__}, got {type(val).__name__} {val}")
+
+        # Check value
+        expected_value = cfg.get("value")
+        if expected_value and val != expected_value:
+            errors.append(f"{key} in {loc} should be {expected_value}, got {val}")
 
         # ------------------------------ Custom validator --------------------------------------- #
         for vname in cfg.get("validator", []):
@@ -83,7 +91,7 @@ def check_iod(
             except ValidationError as e:
                 errors.append(f"{key} in {loc} failed '{vname}': {e}")
         # ---------------------------------------------------------------------------------------- #
-        
+
         # If there is a submap, recursively check the Sequence
         submap = cfg.get("submap")
         if submap:
@@ -112,5 +120,3 @@ if __name__ == "__main__":
             "validator": ["string_len_16"],
         },
     }
-
-    

@@ -195,3 +195,7 @@ cython_debug/
 
 # project
 *.dcm
+*.nii.gz
+*.nii
+tmp/
+example/
