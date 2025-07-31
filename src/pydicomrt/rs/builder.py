@@ -1,3 +1,4 @@
+import os
 import datetime
 
 from pydicom.uid import generate_uid
@@ -5,6 +6,8 @@ from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.sequence import Sequence
 from pydicom.uid import ImplicitVRLittleEndian
 
+
+DICOM_UID_PREFIX = os.getenv('DICOM_UID_PREFIX', "1.2.826.0.1.3680043.8.498.")  # PYDICOM_ROOT_UID
 
 def create_rtstruct_dataset(series_data) -> FileDataset:
     ds = generate_base_dataset()
@@ -29,9 +32,10 @@ def get_file_meta() -> FileMetaDataset:
     file_meta.TransferSyntaxUID = ImplicitVRLittleEndian
     file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.481.3"
     file_meta.MediaStorageSOPInstanceUID = (
-        generate_uid()
+        generate_uid(prefix=DICOM_UID_PREFIX)
     )
-    file_meta.ImplementationClassUID = "1.2.826.0.1.3680043.8.498.1"
+    file_meta.ImplementationClassUID = DICOM_UID_PREFIX + "1"
+    # TODO file_meta.ImplementationVersionName = ""
     return file_meta
 
 def add_required_elements_to_ds(ds: FileDataset):
@@ -72,7 +76,7 @@ def add_study_and_series_information(ds: FileDataset, series_data):
     ds.StudyDescription = getattr(reference_ds, "StudyDescription", "")
     ds.SeriesDescription = getattr(reference_ds, "SeriesDescription", "")
     ds.StudyInstanceUID = reference_ds.StudyInstanceUID
-    ds.SeriesInstanceUID = generate_uid()  # TODO: find out if random generation is ok
+    ds.SeriesInstanceUID = generate_uid(prefix=DICOM_UID_PREFIX)  # TODO: find out if random generation is ok
     ds.StudyID = reference_ds.StudyID
     ds.AccessionNumber = getattr(reference_ds, "AccessionNumber", "")
     ds.SeriesNumber = "1"  # TODO: find out if we can just use 1 (Should be fine since its a new series)
@@ -90,12 +94,12 @@ def add_patient_information(ds: FileDataset, series_data):
 
 def add_refd_frame_of_ref_sequence(ds: FileDataset, series_data):
     refd_frame_of_ref = Dataset()
-    refd_frame_of_ref.FrameOfReferenceUID = getattr(series_data[0], 'FrameOfReferenceUID', generate_uid())
+    refd_frame_of_ref.FrameOfReferenceUID = getattr(series_data[0], 'FrameOfReferenceUID', generate_uid(prefix=DICOM_UID_PREFIX))
     refd_frame_of_ref.RTReferencedStudySequence = create_frame_of_ref_study_sequence(series_data)
 
     ds.ReferencedFrameOfReferenceSequence = Sequence()
     ds.ReferencedFrameOfReferenceSequence.append(refd_frame_of_ref)
-    ds.FrameOfReferenceUID = getattr(series_data[0], 'FrameOfReferenceUID', generate_uid())
+    ds.FrameOfReferenceUID = getattr(series_data[0], 'FrameOfReferenceUID', generate_uid(prefix=DICOM_UID_PREFIX))
 
 def create_frame_of_ref_study_sequence(series_data) -> Sequence:
     reference_ds = series_data[0]

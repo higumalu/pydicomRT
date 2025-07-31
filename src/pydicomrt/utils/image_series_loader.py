@@ -7,6 +7,24 @@ from pydicom import dcmread
 from pydicom.dataset import Dataset
 
 
+def sort_ds_list(ds_list: list[Dataset]) -> list[Dataset]:
+    return sorted(ds_list, key=get_slice_position, reverse=False)
+
+def get_slice_position(series_slice: Dataset):
+    _, _, slice_direction = get_slice_directions(series_slice)
+    return np.dot(slice_direction, series_slice.ImagePositionPatient)
+
+def get_slice_directions(series_slice: Dataset):
+    orientation = series_slice.ImageOrientationPatient
+    row_direction = np.array(orientation[:3])
+    column_direction = np.array(orientation[3:])
+    slice_direction = np.cross(row_direction, column_direction)
+    if not np.allclose(
+        np.dot(row_direction, column_direction), 0.0, atol=1e-3
+    ) or not np.allclose(np.linalg.norm(slice_direction), 1.0, atol=1e-3):
+        raise Exception("Invalid Image Orientation (Patient) attribute")
+    return row_direction, column_direction, slice_direction
+
 def load_sorted_image_series(
     image_series_path: str | list[str],
     ) -> list[Dataset]:
@@ -45,20 +63,13 @@ def load_sorted_image_series(
     return image_ds_list
 
 
-def sort_ds_list(ds_list: list[Dataset]) -> list[Dataset]:
-    return sorted(ds_list, key=get_slice_position, reverse=False)
-
-def get_slice_position(series_slice: Dataset):
-    _, _, slice_direction = get_slice_directions(series_slice)
-    return np.dot(slice_direction, series_slice.ImagePositionPatient)
-
-def get_slice_directions(series_slice: Dataset):
-    orientation = series_slice.ImageOrientationPatient
+if __name__ == "__main__":
+    orientation = [-1, 0, 0, 0, -1, 0]
     row_direction = np.array(orientation[:3])
     column_direction = np.array(orientation[3:])
     slice_direction = np.cross(row_direction, column_direction)
-    if not np.allclose(
-        np.dot(row_direction, column_direction), 0.0, atol=1e-3
-    ) or not np.allclose(np.linalg.norm(slice_direction), 1.0, atol=1e-3):
-        raise Exception("Invalid Image Orientation (Patient) attribute")
-    return row_direction, column_direction, slice_direction
+    print(slice_direction)
+    image_position = [2, 2, 2]
+    slice_idx = np.dot(slice_direction, image_position)
+    print(slice_idx)
+    print(sorted([-1, -2, -3, -4], reverse=False))

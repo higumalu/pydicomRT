@@ -1,6 +1,6 @@
-from pydicom.dataset import Dataset
-
 import numpy as np
+
+from pydicom.dataset import Dataset
 
 
 def get_slice_position(series_slice: Dataset):
@@ -46,7 +46,7 @@ def get_pixel_to_patient_transformation_matrix(series_data):
     mat[:3, 1] = column_direction * column_spacing
     mat[:3, 2] = slice_direction * slice_spacing
     mat[:3, 3] = offset     # + np.array([0.5, 0.5, 0.0])
-    
+
     return mat
 
 

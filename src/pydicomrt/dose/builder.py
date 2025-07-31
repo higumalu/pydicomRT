@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import SimpleITK as sitk
 
@@ -7,6 +8,9 @@ from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.sequence import Sequence
 from pydicom.uid import generate_uid
 from pydicom.uid import ImplicitVRLittleEndian
+
+
+DICOM_UID_PREFIX = os.getenv('DICOM_UID_PREFIX', "1.2.826.0.1.3680043.8.498.")  # PYDICOM_ROOT_UID
 
 def generate_base_dataset() -> FileDataset:
     file_name = "bear_dose"
@@ -23,9 +27,10 @@ def get_file_meta() -> FileMetaDataset:
     file_meta.TransferSyntaxUID = ImplicitVRLittleEndian
     file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.481.2"
     file_meta.MediaStorageSOPInstanceUID = (
-        generate_uid()
+        generate_uid(prefix=DICOM_UID_PREFIX)
     )
-    file_meta.ImplementationClassUID = "1.2.826.0.1.3680043.8.498.1"
+    file_meta.ImplementationClassUID = DICOM_UID_PREFIX + "1"
+    # TODO file_meta.ImplementationVersionName = ""
     return file_meta
 
 def add_required_elements_to_ds(ds: FileDataset):
@@ -64,7 +69,7 @@ def add_patient_information(ds: FileDataset, reference_ds: Dataset):
 
 def add_study_information(ds: FileDataset, reference_ds: Dataset):
     dt = datetime.now()
-    ds.StudyInstanceUID = getattr(reference_ds, "StudyInstanceUID", generate_uid())
+    ds.StudyInstanceUID = getattr(reference_ds, "StudyInstanceUID", generate_uid(prefix=DICOM_UID_PREFIX))
     ds.StudyDate = getattr(reference_ds, "StudyDate", dt.strftime("%Y%m%d"))
     ds.StudyTime = getattr(reference_ds, "StudyTime", dt.strftime("%H%M%S"))
     ds.StudyID = getattr(reference_ds, "StudyID", "")
@@ -75,7 +80,7 @@ def add_study_information(ds: FileDataset, reference_ds: Dataset):
 def add_series_information(ds: FileDataset, reference_ds: Dataset, series_number: int = 1):
     dt = datetime.now()
     ds.Modality = "RTDOSE"
-    ds.SeriesInstanceUID = generate_uid()
+    ds.SeriesInstanceUID = generate_uid(prefix=DICOM_UID_PREFIX)
     ds.SeriesDate = dt.strftime("%Y%m%d")
     ds.SeriesTime = dt.strftime("%H%M%S")
     ds.SeriesDescription = getattr(reference_ds, "SeriesDescription", "") + "_dose" + dt.strftime("%Y%m%d%H%M%S")
@@ -84,7 +89,7 @@ def add_series_information(ds: FileDataset, reference_ds: Dataset, series_number
     return ds
 
 def add_frame_of_reference_information(ds: FileDataset, reference_ds: Dataset):
-    ds.FrameOfReferenceUID = getattr(reference_ds, "FrameOfReferenceUID", generate_uid())
+    ds.FrameOfReferenceUID = getattr(reference_ds, "FrameOfReferenceUID", generate_uid(prefix=DICOM_UID_PREFIX))
     ds.PositionReferenceIndicator = getattr(reference_ds, "PositionReferenceIndicator", "")
     return ds
 
