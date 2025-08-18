@@ -1,6 +1,6 @@
 # pydicomRT
 
-**pydicomRT** is a Python library for handling Radiation Therapy Structure Set (RTSTRUCT) DICOM files. It provides capabilities for creating, modifying, and validating RTSTRUCT datasets, as well as tools for converting between RTSTRUCT and volumetric masks.
+**pydicomRT** is a Python library for handling Radiation Therapy DICOM files. It provides capabilities for creating, modifying, and validating RTSTRUCT datasets, as well as tools for converting between RTSTRUCT and volumetric masks. Additionally, it supports handling other radiation therapy related DICOM files such as dose distributions and registration data.
 
 ---
 
@@ -13,6 +13,9 @@
 - Validate RTSTRUCT dataset compliance  
 - Handle and sort DICOM image series  
 - Coordinate transformation utilities  
+- Create and validate DICOM dose distributions  
+- Handle spatial registration data  
+- Support for CT image data  
 
 ---
 
@@ -22,9 +25,10 @@
 
 - Python >= 3.8  
 - pydicom >= 2.0.0  
-- numpy == 1.26.4  
+- numpy >= 1.26.4  
 - opencv-python >= 4.10.0  
 - scipy >= 1.10.3  
+- simpleitk >= 2.5.0  
 
 ### Install via pip
 
@@ -34,9 +38,8 @@ pip install pydicomrt
 
 ### Install from source
 
-
 ```bash
-git clone https://github.com/yourusername/pydicomRT.git
+git clone https://github.com/higumalu/pydicomRT.git
 cd pydicomRT
 pip install .
 ```
@@ -113,11 +116,27 @@ print(result)  # Output: {'result': True, 'content': []}
   - `parser`: Parse RTSTRUCT datasets  
   - `checker`: Validate RTSTRUCT datasets  
   - `rs_to_volume`: Convert between RTSTRUCT and volume data  
+  - `packer`: Pack contour data  
+  - `contour_process_method`: Contour processing methods  
+  - `rs_ds_iod`: RTSTRUCT IOD definitions  
+
+- **reg**: Spatial registration functionalities  
+  - `builder`: Create registration datasets  
+  - `parser`: Parse registration datasets  
+  - `check`: Validate registration datasets  
+  - `sitk_reg_method`: Registration methods using SimpleITK  
+
+- **dose**: Dose distribution functionalities  
+  - `builder`: Create dose datasets  
+
+- **ct**: CT image data functionalities  
+  - `ct_ds_iod`: CT IOD definitions  
 
 - **utils**: Utility tools  
   - `image_series_loader`: Load and sort DICOM image series  
   - `coordinate_transform`: Coordinate transformation utilities  
   - `validate_dcm_info`: Validate DICOM metadata  
+  - `sitk_transform`: Transformations using SimpleITK  
 
 ---
 
@@ -129,7 +148,7 @@ Issues and pull requests are welcome!
 
 ## License
 
-Please refer to the `LICENSE` file.
+This project is licensed under the MIT License - see the `LICENSE` file for details.
 
 ---
 

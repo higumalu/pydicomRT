@@ -126,6 +126,25 @@ def ds_list_to_sitk_image(ds_list):
     sitk_image.SetDirection(direction)
     return sitk_image
 
+def resample_to_reference_image(reference_image, source_image, min_val=-1000.0):
+    """
+    Resample the input image to the reference image space.
+    Args:
+        input_image (sitk.Image): Input image.
+        target_image (sitk.Image): Target image.
+    Returns:
+        sitk.Image: Input image with synchronized spacing, origin, and direction.
+    """
+    resample_image = sitk.Resample(
+        source_image,
+        reference_image,
+        sitk.Transform(),
+        sitk.sitkLinear,
+        min_val,
+        reference_image.GetPixelID())
+    return resample_image
+
+
 
 if __name__ == "__main__":
     ct_path = "example/data/Mirror/CT"
