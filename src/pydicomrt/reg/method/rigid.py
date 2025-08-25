@@ -4,8 +4,8 @@ import SimpleITK as sitk
 def rigid_registration(
     fixed_image: sitk.Image,
     moving_image: sitk.Image,
-    histogram_bins: int = 50,
-    learning_rate: float = 1.0,
+    histogram_bins: int = 100,
+    learning_rate: float = 2.0,
     iterations: int = 100,
     convergence_minimum_value: float = 1e-6,
     convergence_window_size: int = 10,
@@ -13,10 +13,10 @@ def rigid_registration(
     """
     Perform rigid registration between two 3D images using SimpleITK.
 
-    This function aligns a moving image to a fixed image by estimating 
+    This function aligns a moving image to a fixed image by estimating
     a rigid transformation (translation + rotation, no scaling/shearing).
-    The method uses Mattes Mutual Information as a similarity metric, 
-    a gradient descent optimizer, and returns an affine transform 
+    The method uses Mattes Mutual Information as a similarity metric,
+    a gradient descent optimizer, and returns an affine transform
     containing only the rigid components.
 
     Args:
@@ -29,7 +29,7 @@ def rigid_registration(
         convergence_window_size (int, optional): Window size for convergence checking. Default = 10.
 
     Returns:
-        sitk.Transform: An affine transform containing only rotation and translation 
+        sitk.Transform: An affine transform containing only rotation and translation
                         that aligns the moving image to the fixed image.
     """
 

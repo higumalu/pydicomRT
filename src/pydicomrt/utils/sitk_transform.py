@@ -145,7 +145,6 @@ def resample_to_reference_image(reference_image, source_image, min_val=-1000.0):
     return resample_image
 
 
-
 if __name__ == "__main__":
     ct_path = "example/data/Mirror/CT"
     ct_ds_list = load_sorted_image_series(ct_path)

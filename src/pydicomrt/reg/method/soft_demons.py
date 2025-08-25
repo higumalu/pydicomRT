@@ -2,7 +2,6 @@ import SimpleITK as sitk
 import numpy as np
 from typing import Optional
 
-# -------- helpers --------
 
 def _infer_background_value(img: sitk.Image, default_fallback: float = 0.0) -> float:
     """If the image looks like a CT (min <= -1000), return -1000. Otherwise, return fallback."""
@@ -50,12 +49,11 @@ def _resample_to_reference(
         pixel_id = img.GetPixelID()
     return sitk.Resample(img, reference, transform, interp, default_value, pixel_id)
 
-# -------- main API --------
 
 def demons_with_soft_mask(
     fixed: sitk.Image,
     moving: sitk.Image,
-    demons_fn,  # your demons_registration(fixed, moving, **kwargs)
+    demons_fn,  # demons_registration(fixed, moving, **kwargs)
     *,
     fixed_mask: sitk.Image,
     moving_mask: Optional[sitk.Image] = None,
