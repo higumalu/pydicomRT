@@ -1,7 +1,7 @@
 [project]
 name = "pydicomrt"
-version = "0.4.0"
-description = "Add your description here"
+version = "0.5.0"
+description = "DICOM RT Structure and Registration"
 readme = "README.md"
 authors = [
     { name = "Higumalu", email = "higuma.lu@gmail.com" }
