@@ -107,6 +107,21 @@ print(result)  # Output: {'result': True, 'content': []}
 
 ---
 
+### Convert RTSTRUCT to 3D Mask
+
+```python
+from pydicomrt.rs.rs_to_volume import rtstruct_to_mask_dict
+from pydicomrt.utils.image_series_loader import load_sorted_image_series
+
+# Load DICOM image series
+ds_list = load_sorted_image_series("path/to/dicom/images")
+
+# Convert RTSTRUCT to 3D mask dictionary
+mask_dict = rtstruct_to_mask_dict(rs_ds, ds_list)
+```
+
+---
+
 ## Module Structure
 
 - **rs**: RTSTRUCT-related functionalities  
@@ -124,10 +139,14 @@ print(result)  # Output: {'result': True, 'content': []}
   - `builder`: Create registration datasets  
   - `parser`: Parse registration datasets  
   - `check`: Validate registration datasets  
-  - `sitk_reg_method`: Registration methods using SimpleITK  
+  - `method`: Registration methods using SimpleITK  
+  - `ds_reg_ds_iod`: Deformable spatial registration IOD definitions  
+  - `s_reg_ds_iod`: Spatial registration IOD definitions  
+  - `type_transform`: Type transformations  
 
 - **dose**: Dose distribution functionalities  
   - `builder`: Create dose datasets  
+  - `dose_ds_iod`: Dose IOD definitions  
 
 - **ct**: CT image data functionalities  
   - `ct_ds_iod`: CT IOD definitions  
@@ -137,6 +156,7 @@ print(result)  # Output: {'result': True, 'content': []}
   - `coordinate_transform`: Coordinate transformation utilities  
   - `validate_dcm_info`: Validate DICOM metadata  
   - `sitk_transform`: Transformations using SimpleITK  
+  - `rs_from_altas`: Create RTSTRUCT from atlas  
 
 ---
 
