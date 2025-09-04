@@ -4,6 +4,16 @@
 
 ---
 
+## Project Goals
+
+- **Lower the development barrier for RT applications**  
+  Provide intuitive APIs and tools that allow researchers and engineers to work with radiation therapy–related DICOM files more easily, without requiring deep knowledge of the complex DICOM standard.  
+
+- **Enable seamless integration between Python 3D libraries and pydicom**  
+  Build a robust bridge so that common Python 3D image processing libraries (e.g., `numpy`, `SimpleITK`) can work seamlessly with `pydicom`, accelerating medical imaging and radiotherapy application development.  
+
+---
+
 ## Features
 
 - Create RTSTRUCT datasets  
