@@ -177,12 +177,8 @@ class SpatialRegistrationBuilder(BaseRegistrationBuilder):
 # --------------------- Deformable Spatial Registration Builder ---------------------
 
 class DeformableSpatialRegistrationBuilder(BaseRegistrationBuilder):
-    def __init__(self, fixed_ds_list, moving_ds_list, pre_transform, vectorial_field, post_transform):
+    def __init__(self, fixed_ds_list):
         super().__init__(fixed_ds_list)
-        self.moving_ds_list = moving_ds_list
-        self.pre_transform = pre_transform
-        self.vectorial_field = vectorial_field
-        self.post_transform = post_transform
 
     @property
     def _sop_class_uid(self) -> str:
@@ -196,10 +192,11 @@ class DeformableSpatialRegistrationBuilder(BaseRegistrationBuilder):
     def add_deformable_registration(
         self,
         moving_ds_list,
-        pre_transform,
         vectorial_field,
+        pre_transform,
         post_transform):
         deformable_registration_block = Dataset()
+
         # TODO
         # ReferencedImageSequence   (moving)
         # SourceFrameOfReferenceUID   (moving)
@@ -221,6 +218,37 @@ class DeformableSpatialRegistrationBuilder(BaseRegistrationBuilder):
         #     CodingSchemeDesignator     DCM
         #     CodingSchemeVersion       01
         #     CodeMeaning     Image Content-based Alignment
+        deformable_registration_block.ReferencedImageSequence = Sequence()
+        deformable_registration_block.DeformableRegistrationGridSequence = Sequence()
+        deformable_registration_block.PreDeformationMatrixRegistrationSequence = Sequence()
+        deformable_registration_block.PostDeformationMatrixRegistrationSequence = Sequence()
+        deformable_registration_block.RegistrationTypeCodeSequence = Sequence()
+        deformable_registration_block.SourceFrameOfReferenceUID = getattr(moving_ds_list[0], "FrameOfReferenceUID", "")
+
+        for moving_ds in moving_ds_list:
+            referenced_image = Dataset()
+            referenced_image.ReferencedSOPClassUID = moving_ds.SOPClassUID
+            referenced_image.ReferencedSOPInstanceUID = moving_ds.SOPInstanceUID
+            deformable_registration_block.ReferencedImageSequence.append(referenced_image)
+
+        deformable_registration_grid = Dataset()
+        deformable_registration_grid.ImagePositionPatient = vectorial_field.image_position_patient
+        deformable_registration_grid.ImageOrientationPatient = vectorial_field.image_orientation_patient
+        deformable_registration_grid.GridDimensions = vectorial_field.grid_dimensions
+        deformable_registration_grid.GridResolution = vectorial_field.grid_resolution
+        deformable_registration_grid.VectorGridData = vectorial_field.vector_grid_data
+        deformable_registration_block.DeformableRegistrationGridSequence.append(deformable_registration_grid)
+
+        pre_deformation_matrix_registration = Dataset()
+        pre_deformation_matrix_registration.FrameOfReferenceTransformationMatrixType = "RIGID"
+        pre_deformation_matrix_registration.FrameOfReferenceTransformationMatrix = pre_transform
+        deformable_registration_block.PreDeformationMatrixRegistrationSequence.append(pre_deformation_matrix_registration)
+
+        post_deformation_matrix_registration = Dataset()
+        post_deformation_matrix_registration.FrameOfReferenceTransformationMatrixType = "RIGID"
+        post_deformation_matrix_registration.FrameOfReferenceTransformationMatrix = post_transform
+        deformable_registration_block.PostDeformationMatrixRegistrationSequence.append(post_deformation_matrix_registration)
+
         self.registration_dataset_list.append(deformable_registration_block)
         pass
 

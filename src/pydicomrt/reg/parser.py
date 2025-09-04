@@ -17,6 +17,7 @@ def get_deformable_reg_list(reg_ds: Dataset) -> list:
         reg_dict['DeformableRegistrationGrid']['GridDimensions'] = deformed_grid_data.GridDimensions
         reg_dict['DeformableRegistrationGrid']['GridResolution'] = deformed_grid_data.GridResolution
         reg_dict['DeformableRegistrationGrid']['ImagePositionPatient'] = deformed_grid_data.ImagePositionPatient
+        reg_dict['DeformableRegistrationGrid']['ImageOrientationPatient'] = deformed_grid_data.ImageOrientationPatient
 
         grid_dim = deformed_grid_data.GridDimensions
         vector_grid_data = deformed_grid_data.VectorGridData
@@ -27,3 +28,11 @@ def get_deformable_reg_list(reg_ds: Dataset) -> list:
         reg_dict_list.append(reg_dict)
 
     return reg_dict_list
+
+
+if __name__ == '__main__':
+    import pydicom
+    deformable_dcm_path = 'example/data/DF_001/REG/DR.dcm'
+    reg_ds = pydicom.dcmread(deformable_dcm_path)
+    reg_dict_list = get_deformable_reg_list(reg_ds)
+    print(reg_dict_list)
