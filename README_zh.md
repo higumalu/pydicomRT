@@ -1,6 +1,19 @@
 # pydicomRT
 pydicomRT 是一個用於處理放射治療結構集（RTSTRUCT）DICOM文件的Python庫。它提供了創建、修改和驗證RTSTRUCT數據集的功能，以及在RTSTRUCT和體積掩碼之間進行轉換的工具。
 
+---
+
+## 專案目標
+
+- **降低放射治療應用的開發門檻**  
+  提供直觀的 API 和工具，使研究人員與工程師能更輕鬆地處理與放射治療相關的 DICOM 檔案，而不需要深入了解複雜的 DICOM 標準。  
+
+- **實現 Python 3D 函式庫與 pydicom 的無縫整合**  
+  建立穩健的橋樑，讓常見的 Python 3D 影像處理函式庫（例如 `numpy`、`SimpleITK`）能與 `pydicom` 無縫協作，加速醫學影像與放射治療應用的開發。  
+
+
+---
+
 ## 功能特點
 - 創建RTSTRUCT數據集
 - 添加和管理感興趣區域(ROI)
