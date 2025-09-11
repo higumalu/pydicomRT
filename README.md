@@ -176,6 +176,15 @@ Issues and pull requests are welcome!
 
 ---
 
+## Reference
+
+- [SimpleITK](https://simpleitk.org/)
+- [pydicom](https://pydicom.github.io/)
+- [RT-Utils](https://github.com/qurit/rt-utils)
+- [PlatiPy](https://github.com/pyplati/platipy)
+
+---
+
 ## License
 
 This project is licensed under the MIT License - see the `LICENSE` file for details.
