@@ -36,6 +36,7 @@
 - RTSTRUCT API: `src/pydicomrt/rs`  
 - Registration API: `src/pydicomrt/reg`  
 - Utilities: `src/pydicomrt/utils`
+- Architecture Doc: `docs/architecture.md`
 
 ---
 
