@@ -1,6 +1,6 @@
 # pydicomRT
 
-**pydicomRT** is a Python library for handling Radiation Therapy DICOM files. It provides capabilities for creating, modifying, and validating RTSTRUCT datasets, as well as tools for converting between RTSTRUCT and volumetric masks. Additionally, it supports handling other radiation therapy related DICOM files such as dose distributions and registration data.
+**pydicomRT** is a Python library for handling Radiation Therapy DICOM files. It provides utilities to create, modify, parse, and validate RTSTRUCT datasets; convert between RTSTRUCT and volumetric masks; and handle spatial/deformable registration and dose. It integrates smoothly with `pydicom`, `numpy`, and `SimpleITK`.
 
 ---
 
@@ -24,8 +24,18 @@
 - Handle and sort DICOM image series  
 - Coordinate transformation utilities  
 - Create and validate DICOM dose distributions  
-- Handle spatial registration data  
+- Build and parse spatial/deformable registration (REG/DRR) datasets  
+- SimpleITK-based registration helpers (rigid, B-spline, demons)  
 - Support for CT image data  
+
+---
+
+## Quick Links
+
+- Examples: `example/try_demon_reg.py`, `example/try_sort_dcms.py`  
+- RTSTRUCT API: `src/pydicomrt/rs`  
+- Registration API: `src/pydicomrt/reg`  
+- Utilities: `src/pydicomrt/utils`
 
 ---
 
@@ -90,6 +100,91 @@ rs_ds.save_as("path/to/output.dcm", write_like_original=False)
 
 ---
 
+### Spatial Registration (Rigid) and DICOM REG Export
+
+This example estimates a rigid transform between two CT series using SimpleITK and stores it in a DICOM Spatial Registration (REG) object.
+
+```python
+import SimpleITK as sitk
+from pydicomrt.utils.image_series_loader import load_sorted_image_series
+from pydicomrt.utils.sitk_transform import SimpleITKImageBuilder
+from pydicomrt.reg.method.rigid import rigid_registration
+from pydicomrt.reg.builder import SpatialRegistrationBuilder
+
+# Load CT series as pydicom datasets
+fixed_ds_list = load_sorted_image_series("/path/to/CT_fixed")
+moving_ds_list = load_sorted_image_series("/path/to/CT_moving")
+
+# Convert to SimpleITK images
+fixed_image = SimpleITKImageBuilder().from_ds_list(fixed_ds_list)
+moving_image = SimpleITKImageBuilder().from_ds_list(moving_ds_list)
+
+# Run rigid registration in physical space (returns sitk.Transform)
+transform = rigid_registration(fixed_image, moving_image)
+
+# Convert to 4x4 row-major list for DICOM REG
+m = sitk.TransformToMatrix(transform)  # (R)otation (3x3), (T) translation (3,)
+R = m[0]
+T = m[1]
+rigid_4x4 = [
+    R[0], R[1], R[2], T[0],
+    R[3], R[4], R[5], T[1],
+    R[6], R[7], R[8], T[2],
+    0.0,  0.0,  0.0,  1.0,
+]
+
+# Build a DICOM Spatial Registration dataset and save
+builder = SpatialRegistrationBuilder(fixed_ds_list)
+builder.add_rigid_registration(moving_ds_list, rigid_4x4)
+reg_ds = builder.build()
+reg_ds.save_as("/path/to/output_reg.dcm", write_like_original=False)
+```
+
+Notes:
+- DICOM stores transforms as a 4x4 row-major matrix in the fixed image frame. Ensure transform directions match your use-case.
+- You can set a custom UID root via environment variable `DICOM_UID_PREFIX` before saving.
+
+---
+
+### Deformable Registration (Demons/B-spline) and Resampling
+
+The library provides registration helpers using SimpleITK. A common workflow is: window/clip images, optionally apply a rigid pre-align, run demons or B-spline, then resample moving to fixed.
+
+```python
+import SimpleITK as sitk
+from pydicomrt.utils.image_series_loader import load_sorted_image_series
+from pydicomrt.utils.sitk_transform import SimpleITKImageBuilder, resample_to_reference_image
+from pydicomrt.reg.method.rigid import rigid_registration
+from pydicomrt.reg.method.demons import demons_registration
+
+fixed_ds = load_sorted_image_series("/path/to/CT_fixed")
+moving_ds = load_sorted_image_series("/path/to/CT_moving")
+fixed_img = SimpleITKImageBuilder().from_ds_list(fixed_ds)
+moving_img = SimpleITKImageBuilder().from_ds_list(moving_ds)
+
+# Optional preprocessing: clip HU range
+clip = lambda img: sitk.Clamp(img, lowerBound=-10, upperBound=500)
+fixed_img_c = clip(fixed_img)
+moving_img_c = clip(moving_img)
+
+# Optional: resample the moving to the fixed grid prior to rigid
+moving_img_c = resample_to_reference_image(fixed_img_c, moving_img_c)
+
+# Rigid pre-alignment
+rigid = rigid_registration(fixed_img_c, moving_img_c)
+moving_rigid = sitk.Resample(moving_img_c, rigid, sitk.sitkLinear, -1000)
+
+# Demons deformable registration (returns registered image, transform, dvf)
+reg_img, deform_tfm, dvf = demons_registration(fixed_img_c, moving_rigid, verbose=False)
+
+# Apply deformable transform on original moving image to fixed grid
+moving_deform = sitk.Resample(sitk.Cast(moving_img, sitk.sitkFloat32), deform_tfm, sitk.sitkLinear, -1000)
+```
+
+For an end-to-end example including file outputs, see `example/try_demon_reg.py`.
+
+---
+
 ### Extract Contour Information from RTSTRUCT Dataset
 
 ```python
@@ -145,11 +240,11 @@ mask_dict = rtstruct_to_mask_dict(rs_ds, ds_list)
   - `contour_process_method`: Contour processing methods  
   - `rs_ds_iod`: RTSTRUCT IOD definitions  
 
-- **reg**: Spatial registration functionalities  
-  - `builder`: Create registration datasets  
+- **reg**: Spatial/deformable registration  
+  - `builder`: Build DICOM REG/Deformable REG datasets  
   - `parser`: Parse registration datasets  
   - `check`: Validate registration datasets  
-  - `method`: Registration methods using SimpleITK  
+  - `method`: SimpleITK registration helpers (`rigid`, `bspline`, `demons`, `soft_demons`)  
   - `ds_reg_ds_iod`: Deformable spatial registration IOD definitions  
   - `s_reg_ds_iod`: Spatial registration IOD definitions  
   - `type_transform`: Type transformations  
@@ -165,7 +260,7 @@ mask_dict = rtstruct_to_mask_dict(rs_ds, ds_list)
   - `image_series_loader`: Load and sort DICOM image series  
   - `coordinate_transform`: Coordinate transformation utilities  
   - `validate_dcm_info`: Validate DICOM metadata  
-  - `sitk_transform`: Transformations using SimpleITK  
+  - `sitk_transform`: SimpleITK conversions and resampling helpers  
   - `rs_from_altas`: Create RTSTRUCT from atlas  
 
 ---
