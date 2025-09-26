@@ -1,4 +1,7 @@
 import datetime
+
+from pydicomrt.reg.type_transform import sitk_displacement_field_to_deformable_registration_grid
+
 from abc import ABC, abstractmethod
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.sequence import Sequence
@@ -192,7 +195,7 @@ class DeformableSpatialRegistrationBuilder(BaseRegistrationBuilder):
     def add_deformable_registration(
         self,
         moving_ds_list,
-        vectorial_field,
+        vectorial_field_transform,
         pre_transform,
         post_transform):
         deformable_registration_block = Dataset()
@@ -231,12 +234,7 @@ class DeformableSpatialRegistrationBuilder(BaseRegistrationBuilder):
             referenced_image.ReferencedSOPInstanceUID = moving_ds.SOPInstanceUID
             deformable_registration_block.ReferencedImageSequence.append(referenced_image)
 
-        deformable_registration_grid = Dataset()
-        deformable_registration_grid.ImagePositionPatient = vectorial_field.image_position_patient
-        deformable_registration_grid.ImageOrientationPatient = vectorial_field.image_orientation_patient
-        deformable_registration_grid.GridDimensions = vectorial_field.grid_dimensions
-        deformable_registration_grid.GridResolution = vectorial_field.grid_resolution
-        deformable_registration_grid.VectorGridData = vectorial_field.vector_grid_data
+        deformable_registration_grid = sitk_displacement_field_to_deformable_registration_grid(vectorial_field_transform)
         deformable_registration_block.DeformableRegistrationGridSequence.append(deformable_registration_grid)
 
         pre_deformation_matrix_registration = Dataset()
@@ -249,6 +247,13 @@ class DeformableSpatialRegistrationBuilder(BaseRegistrationBuilder):
         post_deformation_matrix_registration.FrameOfReferenceTransformationMatrix = post_transform
         deformable_registration_block.PostDeformationMatrixRegistrationSequence.append(post_deformation_matrix_registration)
 
+        registration_type_code = Dataset()
+        registration_type_code.CodeValue = "125024"
+        registration_type_code.CodingSchemeDesignator = "DCM"
+        registration_type_code.CodingSchemeVersion = "01"
+        registration_type_code.CodeMeaning = "Image Content-based Alignment"
+        deformable_registration_block.RegistrationTypeCodeSequence.append(registration_type_code)
+
         self.registration_dataset_list.append(deformable_registration_block)
         pass
 
@@ -257,7 +262,7 @@ class DeformableSpatialRegistrationBuilder(BaseRegistrationBuilder):
         self._add_required_elements(ds)
         self._add_patient_information_from_ref_ds(ds, self.ref_ds)
         self._add_study_information_from_ref_ds(ds, self.ref_ds)
-        self._add_series_information(ds, series_desc_prefix="Deformable Spatial Registration")
+        self._add_series_information(ds, self.ref_ds, series_desc_prefix="Deformable Spatial Registration")
         ds.DeformableRegistrationSequence = Sequence()
         for reg_ds in self.registration_dataset_list:
             ds.DeformableRegistrationSequence.append(reg_ds)

@@ -1,5 +1,6 @@
 import numpy as np
 import SimpleITK as sitk
+from pydicom import Dataset
 
 def affine_to_homogeneous_matrix(transform: sitk.AffineTransform) -> np.ndarray:
     """
@@ -19,23 +20,29 @@ def affine_to_homogeneous_matrix(transform: sitk.AffineTransform) -> np.ndarray:
     return hom_mat
 
 
-def displacement_field_to_dict(transform: sitk.DisplacementFieldTransform) -> dict:
+def sitk_displacement_field_to_deformable_registration_grid(transform: sitk.DisplacementFieldTransform) -> Dataset:
     """
     Convert a SimpleITK DisplacementFieldTransform to a dictionary.
     Args:
         transform (sitk.DisplacementFieldTransform): The displacement field transform to convert.
     Returns:
-        dict: Dictionary containing displacement field information.
+        Dataset: Dataset containing deformable registration grid information.
     """
     displacement_field = sitk.GetArrayFromImage(transform.GetDisplacementField())
-    origin = transform.GetOrigin()
-    spacing = transform.GetSpacing()
+    displacement_field = displacement_field.astype('<f4', copy=False)
+    vector_grid_data = displacement_field.ravel(order='C').tobytes()
+
+    origin = list(map(float, transform.GetOrigin()))
+    spacing = list(map(float, transform.GetSpacing()))
+    size = list(map(int, transform.GetSize()))
     direction = transform.GetDirection()
-    size = transform.GetSize()
-    return {
-        "vector_grid": displacement_field,
-        "origin": origin,
-        "spacing": spacing,
-        "direction": direction,
-        "size": size,
-    }
+    orientation = list(map(float, direction[:6]))
+
+    deformable_registration_grid = Dataset()
+    deformable_registration_grid.ImagePositionPatient = origin
+    deformable_registration_grid.ImageOrientationPatient = orientation
+    deformable_registration_grid.GridDimensions = size
+    deformable_registration_grid.GridResolution = spacing
+    deformable_registration_grid.VectorGridData = vector_grid_data
+
+    return deformable_registration_grid
