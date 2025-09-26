@@ -16,26 +16,26 @@
 
 ## Features
 
-- Create RTSTRUCT datasets  
-- Add and manage Regions of Interest (ROIs)  
-- Convert 3D masks to DICOM contours  
-- Convert DICOM contours to 3D masks  
-- Validate RTSTRUCT dataset compliance  
-- Handle and sort DICOM image series  
-- Coordinate transformation utilities  
-- Create and validate DICOM dose distributions  
-- Build and parse spatial/deformable registration (REG/DRR) datasets  
-- SimpleITK-based registration helpers (rigid, B-spline, demons)  
-- Support for CT image data  
+- Build RTSTRUCT datasets and manage Regions of Interest (ROIs)  
+- Convert between 3D numpy masks and DICOM contours  
+- Validate RTSTRUCT, Spatial REG, Deformable REG, and RTDOSE datasets  
+- Load and sort DICOM image series with orientation/spacing sanity checks  
+- Generate RTDOSE datasets and convert RTDOSE DICOM files to SimpleITK images  
+- Export Spatial (`REG`) and Deformable Spatial (`REG-DR`) registrations from SimpleITK transforms  
+- Parse deformable registration grids into NumPy displacement fields  
+- SimpleITK helpers for image building, resampling, and registration (`rigid`, `demons`, `bspline`, `soft_demons`)  
+- Coordinate transformation utilities between pixel and patient spaces  
+- CT modality IOD helpers  
 
 ---
 
 ## Quick Links
 
 - Examples: `example/try_demon_reg.py`, `example/try_sort_dcms.py`  
+- Deformable REG builder demo: `test/reg/df_reg_build_test.py`  
 - RTSTRUCT API: `src/pydicomrt/rs`  
 - Registration API: `src/pydicomrt/reg`  
-- Utilities: `src/pydicomrt/utils`
+- Utilities: `src/pydicomrt/utils`  
 - Architecture Doc: `docs/architecture.md`
 
 ---
@@ -106,83 +106,129 @@ rs_ds.save_as("path/to/output.dcm", write_like_original=False)
 This example estimates a rigid transform between two CT series using SimpleITK and stores it in a DICOM Spatial Registration (REG) object.
 
 ```python
+import numpy as np
 import SimpleITK as sitk
 from pydicomrt.utils.image_series_loader import load_sorted_image_series
 from pydicomrt.utils.sitk_transform import SimpleITKImageBuilder
 from pydicomrt.reg.method.rigid import rigid_registration
+from pydicomrt.reg.type_transform import affine_to_homogeneous_matrix
 from pydicomrt.reg.builder import SpatialRegistrationBuilder
 
 # Load CT series as pydicom datasets
-fixed_ds_list = load_sorted_image_series("/path/to/CT_fixed")
-moving_ds_list = load_sorted_image_series("/path/to/CT_moving")
+fixed_ds = load_sorted_image_series("/path/to/CT_fixed")
+moving_ds = load_sorted_image_series("/path/to/CT_moving")
 
 # Convert to SimpleITK images
-fixed_image = SimpleITKImageBuilder().from_ds_list(fixed_ds_list)
-moving_image = SimpleITKImageBuilder().from_ds_list(moving_ds_list)
+fixed_img = SimpleITKImageBuilder().from_ds_list(fixed_ds)
+moving_img = SimpleITKImageBuilder().from_ds_list(moving_ds)
 
 # Run rigid registration in physical space (returns sitk.Transform)
-transform = rigid_registration(fixed_image, moving_image)
+rigid_tfm = rigid_registration(fixed_img, moving_img)
 
 # Convert to 4x4 row-major list for DICOM REG
-m = sitk.TransformToMatrix(transform)  # (R)otation (3x3), (T) translation (3,)
-R = m[0]
-T = m[1]
-rigid_4x4 = [
-    R[0], R[1], R[2], T[0],
-    R[3], R[4], R[5], T[1],
-    R[6], R[7], R[8], T[2],
-    0.0,  0.0,  0.0,  1.0,
-]
+tfm_4x4 = affine_to_homogeneous_matrix(rigid_tfm).astype(np.float32).ravel().tolist()
 
 # Build a DICOM Spatial Registration dataset and save
-builder = SpatialRegistrationBuilder(fixed_ds_list)
-builder.add_rigid_registration(moving_ds_list, rigid_4x4)
+builder = SpatialRegistrationBuilder(fixed_ds)
+builder.set_uid_prefix("1.2.826.0.1.3680043.2.1125.")  # Optional but helps keep UIDs consistent
+builder.add_rigid_registration(moving_ds, tfm_4x4)
 reg_ds = builder.build()
 reg_ds.save_as("/path/to/output_reg.dcm", write_like_original=False)
 ```
 
 Notes:
 - DICOM stores transforms as a 4x4 row-major matrix in the fixed image frame. Ensure transform directions match your use-case.
-- You can set a custom UID root via environment variable `DICOM_UID_PREFIX` before saving.
+- You can set a custom UID root globally via the `DICOM_UID_PREFIX` environment variable.
 
 ---
 
-### Deformable Registration (Demons/B-spline) and Resampling
+### Deformable Spatial Registration (Demons) Export
 
-The library provides registration helpers using SimpleITK. A common workflow is: window/clip images, optionally apply a rigid pre-align, run demons or B-spline, then resample moving to fixed.
+This workflow performs a rigid pre-align, runs demons registration, and exports the resulting displacement field into a DICOM Deformable Spatial Registration dataset.
 
 ```python
+import numpy as np
 import SimpleITK as sitk
 from pydicomrt.utils.image_series_loader import load_sorted_image_series
 from pydicomrt.utils.sitk_transform import SimpleITKImageBuilder, resample_to_reference_image
 from pydicomrt.reg.method.rigid import rigid_registration
 from pydicomrt.reg.method.demons import demons_registration
+from pydicomrt.reg.type_transform import affine_to_homogeneous_matrix
+from pydicomrt.reg.builder import DeformableSpatialRegistrationBuilder
 
 fixed_ds = load_sorted_image_series("/path/to/CT_fixed")
 moving_ds = load_sorted_image_series("/path/to/CT_moving")
 fixed_img = SimpleITKImageBuilder().from_ds_list(fixed_ds)
 moving_img = SimpleITKImageBuilder().from_ds_list(moving_ds)
 
-# Optional preprocessing: clip HU range
-clip = lambda img: sitk.Clamp(img, lowerBound=-10, upperBound=500)
-fixed_img_c = clip(fixed_img)
-moving_img_c = clip(moving_img)
-
-# Optional: resample the moving to the fixed grid prior to rigid
-moving_img_c = resample_to_reference_image(fixed_img_c, moving_img_c)
+# Ensure voxel grids match before registration
+moving_img = resample_to_reference_image(fixed_img, moving_img)
 
 # Rigid pre-alignment
-rigid = rigid_registration(fixed_img_c, moving_img_c)
-moving_rigid = sitk.Resample(moving_img_c, rigid, sitk.sitkLinear, -1000)
+rigid_tfm = rigid_registration(fixed_img, moving_img)
+rigid_matrix = affine_to_homogeneous_matrix(rigid_tfm).astype(np.float32).ravel().tolist()
+moving_rigid = sitk.Resample(
+    moving_img,
+    fixed_img,
+    rigid_tfm,
+    sitk.sitkLinear,
+    -1000.0,
+    moving_img.GetPixelIDValue(),
+)
 
-# Demons deformable registration (returns registered image, transform, dvf)
-reg_img, deform_tfm, dvf = demons_registration(fixed_img_c, moving_rigid, verbose=False)
+# Demons deformable registration (returns registered image, transform, displacement field)
+reg_img, deform_tfm, dvf = demons_registration(fixed_img, moving_rigid, verbose=False)
 
-# Apply deformable transform on original moving image to fixed grid
-moving_deform = sitk.Resample(sitk.Cast(moving_img, sitk.sitkFloat32), deform_tfm, sitk.sitkLinear, -1000)
+# Export to DICOM Deformable Spatial Registration
+identity = np.eye(4, dtype=np.float32).ravel().tolist()
+
+builder = DeformableSpatialRegistrationBuilder(fixed_ds)
+builder.add_deformable_registration(
+    moving_ds_list=moving_ds,
+    vectorial_field_transform=deform_tfm,
+    pre_transform=rigid_matrix,
+    post_transform=identity,
+)
+reg_dr = builder.build()
+reg_dr.save_as("/path/to/output_dr.dcm", write_like_original=False)
 ```
 
-For an end-to-end example including file outputs, see `example/try_demon_reg.py`.
+`demons_registration` returns a SimpleITK displacement-field transform (`deform_tfm`) and a DVF image (`dvf`). The builder converts the transform into the DICOM `VectorGridData` representation automatically.
+
+---
+
+### Parse a Deformable Registration Dataset
+
+```python
+from pydicom import dcmread
+from pydicomrt.reg.parser import get_deformable_reg_list
+
+reg_ds = dcmread("/path/to/output_dr.dcm")
+reg_entries = get_deformable_reg_list(reg_ds)
+field = reg_entries[0]["DeformableRegistrationGrid"]["VectorGridData"]
+print(field.shape)  # (z, y, x, 3) float32 displacement vectors in mm
+```
+
+---
+
+### Create an RTDOSE Dataset from a SimpleITK Image
+
+```python
+import SimpleITK as sitk
+from pydicom import dcmread
+from pydicomrt.dose.builder import generate_base_dataset, cp_information_from_ds, add_dose_grid_to_ds
+
+reference = dcmread("path/to/reference_ct_or_plan.dcm")
+dose_img = sitk.ReadImage("path/to/dose_image.nii.gz")
+
+dose_ds = generate_base_dataset()
+dose_ds = cp_information_from_ds(dose_ds, reference)
+dose_ds = add_dose_grid_to_ds(dose_ds, dose_img)
+
+dose_ds.save_as("path/to/output_dose.dcm", write_like_original=False)
+```
+
+To convert an RTDOSE DICOM dataset back to SimpleITK, use `pydicomrt.dose.sitk_transform.get_dose_sitk_image`.
 
 ---
 
@@ -242,16 +288,17 @@ mask_dict = rtstruct_to_mask_dict(rs_ds, ds_list)
   - `rs_ds_iod`: RTSTRUCT IOD definitions  
 
 - **reg**: Spatial/deformable registration  
-  - `builder`: Build DICOM REG/Deformable REG datasets  
-  - `parser`: Parse registration datasets  
+  - `builder`: Build DICOM REG / Deformable REG datasets  
+  - `parser`: Extract spatial/deformable transforms (e.g., `get_deformable_reg_list`)  
   - `check`: Validate registration datasets  
   - `method`: SimpleITK registration helpers (`rigid`, `bspline`, `demons`, `soft_demons`)  
   - `ds_reg_ds_iod`: Deformable spatial registration IOD definitions  
   - `s_reg_ds_iod`: Spatial registration IOD definitions  
-  - `type_transform`: Type transformations  
+  - `type_transform`: Transform conversions (affine → homogeneous, displacement fields → DICOM grids)  
 
 - **dose**: Dose distribution functionalities  
   - `builder`: Create dose datasets  
+  - `sitk_transform`: Convert dose datasets to SimpleITK images  
   - `dose_ds_iod`: Dose IOD definitions  
 
 - **ct**: CT image data functionalities  
@@ -261,8 +308,8 @@ mask_dict = rtstruct_to_mask_dict(rs_ds, ds_list)
   - `image_series_loader`: Load and sort DICOM image series  
   - `coordinate_transform`: Coordinate transformation utilities  
   - `validate_dcm_info`: Validate DICOM metadata  
-  - `sitk_transform`: SimpleITK conversions and resampling helpers  
-  - `rs_from_altas`: Create RTSTRUCT from atlas  
+  - `sitk_transform`: SimpleITK conversions, `SimpleITKImageBuilder`, and resampling helpers  
+  - `rs_from_altas`: Build RTSTRUCT datasets from atlas inputs  
 
 ---
 
