@@ -40,9 +40,9 @@ def add_required_elements_to_ds(ds: FileDataset):
     ds.InstanceCreationDate = dt.strftime("%Y%m%d")
     ds.InstanceCreationTime = dt.strftime("%H%M%S")
     ds.Modality = "RTDOSE"
-    ds.Manufacturer = "higumalu"
+    ds.Manufacturer = "pydicomRT"
     ds.ManufacturerModelName = "modelv1"
-    ds.InstitutionName = "higumalu"
+    ds.InstitutionName = "pydicomRT"
     # Set the transfer syntax
     ds.is_little_endian = True
     ds.is_implicit_VR = True
@@ -93,6 +93,37 @@ def add_frame_of_reference_information(ds: FileDataset, reference_ds: Dataset):
     ds.PositionReferenceIndicator = getattr(reference_ds, "PositionReferenceIndicator", "")
     return ds
 
+def add_rf_rt_plan_seq_from_dose_ds(ds: FileDataset, reference_ds: Dataset):
+    sop_class_uid = getattr(getattr(reference_ds, "file_meta", None), "MediaStorageSOPClassUID", None)
+    if sop_class_uid != "1.2.840.10008.5.1.4.1.1.481.2":
+        raise ValueError("reference_ds is not an RT Dose (SOPClassUID does not match RT Dose storage).")
+    ds.ReferencedRTPlanSequence = getattr(reference_ds, "ReferencedRTPlanSequence", Sequence())
+    return ds
+
+def add_rf_rt_plan_seq_from_plan_ds(ds: FileDataset, reference_ds: Dataset):
+    sop_class_uid = getattr(getattr(reference_ds, "file_meta", None), "MediaStorageSOPClassUID", None)
+    if sop_class_uid != "1.2.840.10008.5.1.4.1.1.481.3":
+        raise ValueError("reference_ds is not an RT Plan (SOPClassUID does not match RT Plan storage).")
+    
+    rf_rt_plan_seq_block = Dataset()
+    rf_rt_plan_seq_block.ReferencedSOPClassUID = reference_ds.SOPClassUID
+    rf_rt_plan_seq_block.ReferencedSOPInstanceUID = reference_ds.SOPInstanceUID
+    # TODO ReferencedFractionGroupSequence, ReferencedPlanOverviewIndex
+    '''
+    (300C,0020) ReferencedFractionGroupSequence
+    Required if Dose Summation Type (3004,000A) is 
+    FRACTION, BEAM, BRACHY, FRACTION_SESSION, BEAM_SESSION, BRACHY_SESSION or CONTROL_POINT.
+
+    (300C,0118) ReferencedPlanOverviewIndex
+    The value of Plan Overview Index (300C,0117) from 
+    the Plan Overview Sequence (300C,0116) to which this RT Plan corresponds.
+    Shall be unique, i.e., not be duplicated within another Item of this Referenced RT Plan Sequence (300C,0002).
+    Required if Plan Overview Sequence (300C,0116) is present.
+    '''
+    ds.ReferencedRTPlanSequence.append(rf_rt_plan_seq_block)
+    return ds
+
+
 # ---------------------------------------------------------------------------------------- #
 
 def cp_information_from_ds(
@@ -123,7 +154,7 @@ def add_dose_grid_to_ds(
     ds.BitsAllocated = 32
     ds.BitsStored = 32
     ds.HighBit = 31
-    ds.PixelRepresentation = True
+    ds.PixelRepresentation = 1
     ds.DoseUnits = "GY"
     ds.DoseType = "EFFECTIVE"
     ds.DoseSummationType = "PLAN"
