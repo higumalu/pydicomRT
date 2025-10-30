@@ -97,7 +97,10 @@ def add_rf_rt_plan_seq_from_dose_ds(ds: FileDataset, reference_ds: Dataset):
     sop_class_uid = getattr(getattr(reference_ds, "file_meta", None), "MediaStorageSOPClassUID", None)
     if sop_class_uid != "1.2.840.10008.5.1.4.1.1.481.2":
         raise ValueError("reference_ds is not an RT Dose (SOPClassUID does not match RT Dose storage).")
-    ds.ReferencedRTPlanSequence = getattr(reference_ds, "ReferencedRTPlanSequence", Sequence())
+    rf_rt_plan_seq = getattr(reference_ds, "ReferencedRTPlanSequence", None)
+    if rf_rt_plan_seq is None or len(rf_rt_plan_seq) == 0:
+        raise ValueError("reference_ds does not have a ReferencedRTPlanSequence.")
+    ds.ReferencedRTPlanSequence = rf_rt_plan_seq
     return ds
 
 def add_rf_rt_plan_seq_from_plan_ds(ds: FileDataset, reference_ds: Dataset):
