@@ -261,14 +261,17 @@ print(result)  # 輸出: {'result': True, 'content': []}
 ### 將 RTSTRUCT 轉換為 3D 遮罩
 
 ```python
-from pydicomrt.rs.rs_to_volume import rtstruct_to_mask_dict
+from pydicomrt.rs.rs_to_volume import rtstruct_to_mask_dict, calc_image_series_affine_mapping
 from pydicomrt.utils.image_series_loader import load_sorted_image_series
 
 # 讀取 DICOM 影像序列
 ds_list = load_sorted_image_series("path/to/dicom/images")
 
+# 計算仿射映射與遮罩體積形狀
+affine_mapping, mask_volume_shape = calc_image_series_affine_mapping(ds_list)
+
 # 轉換為 3D 遮罩字典
-mask_dict = rtstruct_to_mask_dict(rs_ds, ds_list)
+mask_dict = rtstruct_to_mask_dict(rs_ds, affine_mapping, mask_volume_shape)
 ```
 
 ---

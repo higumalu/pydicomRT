@@ -262,14 +262,17 @@ print(result)  # Output: {'result': True, 'content': []}
 ### Convert RTSTRUCT to 3D Mask
 
 ```python
-from pydicomrt.rs.rs_to_volume import rtstruct_to_mask_dict
+from pydicomrt.rs.rs_to_volume import rtstruct_to_mask_dict, calc_image_series_affine_mapping
 from pydicomrt.utils.image_series_loader import load_sorted_image_series
 
 # Load DICOM image series
 ds_list = load_sorted_image_series("path/to/dicom/images")
 
+# Calculate affine mapping and mask volume shape
+affine_mapping, mask_volume_shape = calc_image_series_affine_mapping(ds_list)
+
 # Convert RTSTRUCT to 3D mask dictionary
-mask_dict = rtstruct_to_mask_dict(rs_ds, ds_list)
+mask_dict = rtstruct_to_mask_dict(rs_ds, affine_mapping, mask_volume_shape)
 ```
 
 ---
