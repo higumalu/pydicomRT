@@ -81,6 +81,8 @@ def add_study_and_series_information(ds: FileDataset, series_data):
     ds.AccessionNumber = getattr(reference_ds, "AccessionNumber", "")
     ds.SeriesNumber = "1"  # TODO: find out if we can just use 1 (Should be fine since its a new series)
     ds.OperatorsName = getattr(reference_ds, "OperatorsName", "")
+    ds.ReferringPhysicianName = getattr(reference_ds, "ReferringPhysicianName", "")
+    ds.PhysiciansOfRecord = getattr(reference_ds, "PhysiciansOfRecord", "")
 
 def add_patient_information(ds: FileDataset, series_data):
     reference_ds = series_data[0]  # All elements in series should have the same data
