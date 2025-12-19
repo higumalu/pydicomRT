@@ -15,8 +15,8 @@ def get_dose_array_spacing(dose_ds):
 
 def get_dose_direction(dose_ds):
     ori = dose_ds.ImageOrientationPatient
-    row = ori[:3]
-    col = ori[3:]
+    row = ori[0:3]
+    col = ori[3:6]
     cross = np.cross(row, col)
     dose_direction = np.asarray([row, col, cross]).T
     return dose_direction
