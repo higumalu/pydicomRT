@@ -59,7 +59,10 @@ def load_sorted_image_series(
     except Exception as e:
         raise ValueError(f"Error reading DICOM file {dcm_path}: {e}")
 
-    image_ds_list = sort_ds_list(image_ds_list)
+    try:
+        image_ds_list = sort_ds_list(image_ds_list)
+    except Exception as e:
+        raise ValueError(f"Error sorting DICOM files: {e}, check if the ImageOrientationPatient attribute is valid")
     return image_ds_list
 
 
