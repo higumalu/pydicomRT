@@ -394,7 +394,7 @@ def bspline_registration(
 
     dvf_image = sitk.TransformToDisplacementField(
         output_transform,
-        sitk.sitkVectorFloat32,
+        sitk.sitkVectorFloat64,
         fixed_image_original.GetSize(),
         fixed_image_original.GetOrigin(),
         fixed_image_original.GetSpacing(),
