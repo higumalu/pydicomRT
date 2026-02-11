@@ -88,11 +88,25 @@ def rigid_registration(
     return affine_transform
 
 
-def alignment_registration(fixed_image, moving_image, moments=True, interpolator=sitk.sitkLinear, default_value=0):
+def alignment_registration(
+    fixed_image, 
+    moving_image, 
+    moments=True, 
+    interpolator=sitk.sitkLinear, 
+    default_value=0,
+    iterations=0,
+    learning_rate=1.0,
+    histogram_bins=50,
+    convergence_minimum_value=1e-6,
+    convergence_window_size=10
+):
     """
     A simple registration procedure that can align images in a single step.
     Uses the image centres-of-mass (and optionally second moments) to
     estimate the shift (and rotation) needed for alignment.
+    
+    If iterations > 0, performs iterative optimization using gradient descent
+    with Mattes Mutual Information metric.
 
     Args:
         fixed_image ([SimpleITK.Image]): The fixed (target/primary) image.
@@ -105,21 +119,66 @@ def alignment_registration(fixed_image, moving_image, moments=True, interpolator
                                     - SimpleITK.sitkBSpline
                                 Defaults to SimpleITK.sitkLinear.
         default_value (int, optional): Default (background) value. Defaults to 0.
+        iterations (int, optional): Number of optimization iterations. 
+                                    If 0, only performs initialization without optimization (original behavior).
+                                    Defaults to 0.
+        learning_rate (float, optional): Step size for gradient descent optimizer. Defaults to 1.0.
+        histogram_bins (int, optional): Number of histogram bins for Mattes Mutual Information metric. Defaults to 50.
+        convergence_minimum_value (float, optional): Minimum convergence value for optimizer stopping criterion. Defaults to 1e-6.
+        convergence_window_size (int, optional): Window size for convergence checking. Defaults to 10.
 
     Returns:
         [SimpleITK.Image]: The registered moving (secondary) image.
-        [SimleITK.Transform]: The linear transformation.
+        [SimpleITK.Transform]: The linear transformation.
     """
 
     moving_image_type = moving_image.GetPixelIDValue()
     fixed_image = sitk.Cast(fixed_image, sitk.sitkFloat32)
     moving_image = sitk.Cast(moving_image, sitk.sitkFloat32)
+    
     initial_transform = sitk.CenteredTransformInitializer(
         fixed_image, moving_image, sitk.VersorRigid3DTransform(), moments
     )
-    aligned_image = sitk.Resample(moving_image, fixed_image, initial_transform, interpolator, default_value)
+    
+    # If iterations > 0, perform iterative optimization
+    if iterations > 0:
+        # Create the registration method object
+        registration_method = sitk.ImageRegistrationMethod()
+        
+        # Use Mattes Mutual Information (robust for multimodal image registration)
+        registration_method.SetMetricAsMattesMutualInformation(numberOfHistogramBins=histogram_bins)
+        
+        # Use the specified interpolator
+        registration_method.SetInterpolator(interpolator)
+        
+        # Configure the optimizer as gradient descent with given parameters
+        registration_method.SetOptimizerAsGradientDescent(
+            learningRate=learning_rate,
+            numberOfIterations=iterations,
+            convergenceMinimumValue=convergence_minimum_value,
+            convergenceWindowSize=convergence_window_size,
+        )
+        
+        # Scale optimizer step sizes according to physical units of the image
+        registration_method.SetOptimizerScalesFromPhysicalShift()
+        
+        # Assign the initial transform to the registration method
+        registration_method.SetInitialTransform(initial_transform, inPlace=False)
+        
+        # Run the registration (this optimizes the transform parameters)
+        final_transform = registration_method.Execute(fixed_image, moving_image)
+        
+        # Use the optimized transform
+        transform = final_transform
+    else:
+        # Original behavior: use initial transform without optimization
+        transform = initial_transform
+    
+    # Resample the moving image using the transform
+    aligned_image = sitk.Resample(moving_image, fixed_image, transform, interpolator, default_value)
     aligned_image = sitk.Cast(aligned_image, moving_image_type)
-    return aligned_image, initial_transform
+    
+    return aligned_image, transform
 
 
 def registration_command_iteration(method):
