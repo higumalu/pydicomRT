@@ -50,20 +50,6 @@ def get_spatial_reg_dict(reg_ds: Dataset, calc_inverse_matrix: bool = False) -> 
             continue
         reg_dict[fixed_frame_of_reference_uid][moving_frame_of_reference_uid] = matrix_matrix
 
-        # for matrix_reg_index, matrix_registration in enumerate(matrix_registration_sequence):
-        #     matrix_sequence = matrix_registration.MatrixSequence
-        #     if matrix_sequence is None or len(matrix_sequence) == 0:
-        #         print(f"Matrix sequence is empty for {moving_frame_of_reference_uid}.")
-        #         continue
-        #     for matrix_index, matrix in enumerate(matrix_sequence):
-        #         matrix_type = getattr(matrix, "FrameOfReferenceTransformationMatrixType", None)
-        #         matrix_matrix = getattr(matrix, "FrameOfReferenceTransformationMatrix", None)
-        #         if matrix_type is None or matrix_matrix is None:
-        #             raise ValueError("Matrix type or matrix is not found.")
-        #         if matrix_matrix is None:
-        #             raise ValueError("Matrix is not found.")
-        #         reg_dict[fixed_frame_of_reference_uid][moving_frame_of_reference_uid] = matrix_matrix
-
     if calc_inverse_matrix:
         reversed_reg_dict = {}
         for fixed_frame_of_reference_uid, moving_frame_of_reference_uid_dict in reg_dict.items():
@@ -71,9 +57,21 @@ def get_spatial_reg_dict(reg_ds: Dataset, calc_inverse_matrix: bool = False) -> 
                 matrix_matrix = np.array(matrix_matrix).reshape((4, 4))
                 inverse_matrix = np.linalg.inv(matrix_matrix)
                 inverse_matrix = inverse_matrix.ravel().tolist()
-                reversed_reg_dict[moving_frame_of_reference_uid] = {}
+                if moving_frame_of_reference_uid not in reversed_reg_dict:
+                    reversed_reg_dict[moving_frame_of_reference_uid] = {}
                 reversed_reg_dict[moving_frame_of_reference_uid][fixed_frame_of_reference_uid] = inverse_matrix
         reg_dict.update(reversed_reg_dict)
+
+        all_items = list(reg_dict.items())
+        for src_uid, dst_dict in all_items:
+            for dst_uid, mat_list in list(dst_dict.items()):
+                if dst_uid in reg_dict and src_uid in reg_dict[dst_uid]:
+                    continue
+                mat = np.array(mat_list, dtype=float).reshape((4, 4))
+                inv_mat = np.linalg.inv(mat).ravel().tolist()
+                if dst_uid not in reg_dict:
+                    reg_dict[dst_uid] = {}
+                reg_dict[dst_uid][src_uid] = inv_mat
     return reg_dict
 
 
