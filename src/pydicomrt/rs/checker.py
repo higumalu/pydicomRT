@@ -52,28 +52,39 @@ def is_rtstruct_matching_series(
     :param series_ds_list: list of series dataset
     :return: True if matching, False otherwise
     """
+    if not series_ds_list:
+        return False
+
     status = 0
     first_slice = series_ds_list[0]
-    if rs_ds.FrameOfReferenceUID == first_slice.FrameOfReferenceUID:
+
+    rs_for_uid = getattr(rs_ds, "FrameOfReferenceUID", None)
+    series_for_uid = getattr(first_slice, "FrameOfReferenceUID", None)
+    if rs_for_uid is not None and series_for_uid is not None and rs_for_uid == series_for_uid:
         status += 1
 
-    try:
-        rs_ds_series_uid_list = rs_ds.ReferencedFrameOfReferenceSequence[0].RTReferencedSeriesSequence[0].SeriesInstanceUID
-        if rs_ds_series_uid_list == first_slice.SeriesInstanceUID:
-            status += 1
-    except Exception:
-        pass
+    referenced_for_seq = getattr(rs_ds, "ReferencedFrameOfReferenceSequence", None)
+    if referenced_for_seq:
+        try:
+            rt_referenced_series_seq = getattr(referenced_for_seq[0], "RTReferencedSeriesSequence", None)
+            if rt_referenced_series_seq:
+                rs_series_uid = getattr(rt_referenced_series_seq[0], "SeriesInstanceUID", None)
+                series_instance_uid = getattr(first_slice, "SeriesInstanceUID", None)
+                if rs_series_uid is not None and series_instance_uid is not None and rs_series_uid == series_instance_uid:
+                    status += 1
+        except (AttributeError, IndexError, TypeError):
+            pass
 
-    try:
-        sop_instance_uid_list = [ds.SOPInstanceUID for ds in series_ds_list]
-        for roi_contour_sequence in rs_ds.ROIContourSequence:
-            contour_sequence = roi_contour_sequence.ContourSequence
-            for contour in contour_sequence:
-                for contour_image_sequence in contour.ContourImageSequence:
-                    if contour_image_sequence.ReferencedSOPInstanceUID not in sop_instance_uid_list:
-                        status = 0
-                        break
-    except Exception:
-        pass
+    sop_instance_uid_list = [
+        uid for uid in (getattr(ds, "SOPInstanceUID", None) for ds in series_ds_list)
+        if uid is not None
+    ]
+    for roi_contour_sequence in getattr(rs_ds, "ROIContourSequence", []):
+        for contour in getattr(roi_contour_sequence, "ContourSequence", []):
+            for contour_image in getattr(contour, "ContourImageSequence", []):
+                referenced_sop_uid = getattr(contour_image, "ReferencedSOPInstanceUID", None)
+                if referenced_sop_uid is not None and referenced_sop_uid not in sop_instance_uid_list:
+                    status = 0
+                    break
 
     return status > 0
