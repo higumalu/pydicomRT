@@ -120,7 +120,7 @@ class SpatialRegistrationBuilder(BaseRegistrationBuilder):
 
     def add_rigid_registration(self, moving_ds_list, rigid_transform_matrix):
         rigid_registration_block = Dataset()
-        # TODO
+        # DONE
         # ReferencedImageSequence   (moving)
         # FrameOfReferenceUID   (moving)
         # MatrixRegistrationSequence

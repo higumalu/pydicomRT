@@ -33,29 +33,48 @@ def get_contour_dict(
     """
     contour_dict = {}
     number_name_map = get_roi_number_to_name(rs_ds)
-    for roi_contour_sequence in rs_ds.ROIContourSequence:
-        roi_number = roi_contour_sequence.ReferencedROINumber
-        roi_color = roi_contour_sequence.ROIDisplayColor
-        roi_name = number_name_map[roi_number]
-        contour_dict[roi_number] = {}
-        contour_dict[roi_number]['color'] = roi_color
-        contour_dict[roi_number]['name'] = roi_name
-        contour_dict[roi_number]['dcm_contour'] = {}
-        for contour_sequence in roi_contour_sequence.ContourSequence:
-            sop_instance_uid = contour_sequence.ContourImageSequence[0].ReferencedSOPInstanceUID    # TODO ensure only one image is referenced
-            sop_class_uid = contour_sequence.ContourImageSequence[0].ReferencedSOPClassUID
-            contour_data = contour_sequence.ContourData
+    for roi_contour_sequence in getattr(rs_ds, "ROIContourSequence", []):
+        roi_number = getattr(roi_contour_sequence, "ReferencedROINumber", None)
+        if roi_number is None:
+            continue
 
-            if sop_instance_uid not in contour_dict[roi_number]['dcm_contour']:
-                contour_dict[roi_number]['dcm_contour'][sop_instance_uid] = {}
-                contour_dict[roi_number]['dcm_contour'][sop_instance_uid]['sop_class_uid'] = sop_class_uid
-                contour_dict[roi_number]['dcm_contour'][sop_instance_uid]['contours'] = []
+        roi_color = getattr(roi_contour_sequence, "ROIDisplayColor", [255, 255, 255])
+        roi_name = number_name_map.get(roi_number, f"ROI_{roi_number}")
+        contour_dict[roi_number] = {
+            'color': roi_color,
+            'name': roi_name,
+            'dcm_contour': {},
+        }
 
-            contour_dict[roi_number]['dcm_contour'][sop_instance_uid]['contours'].append(contour_data)
+        for contour_sequence in getattr(roi_contour_sequence, "ContourSequence", []):
+            try:
+                contour_image_sequence = getattr(contour_sequence, "ContourImageSequence", None)
+                if not contour_image_sequence:
+                    continue
+                contour_image = contour_image_sequence[0]
+                sop_instance_uid = getattr(contour_image, "ReferencedSOPInstanceUID", None)
+                sop_class_uid = getattr(contour_image, "ReferencedSOPClassUID", None)
+                contour_data = getattr(contour_sequence, "ContourData", None)
+                if sop_instance_uid is None or contour_data is None:
+                    continue
 
-    for roi_observations_sequence in rs_ds.RTROIObservationsSequence:
-        roi_number = roi_observations_sequence.ReferencedROINumber
-        contour_dict[roi_number]['interpreted_type'] = getattr(roi_observations_sequence, "RTROIInterpretedType", "NOTAG")
+                if sop_instance_uid not in contour_dict[roi_number]['dcm_contour']:
+                    contour_dict[roi_number]['dcm_contour'][sop_instance_uid] = {
+                        'sop_class_uid': sop_class_uid,
+                        'contours': [],
+                    }
+
+                contour_dict[roi_number]['dcm_contour'][sop_instance_uid]['contours'].append(contour_data)
+            except (AttributeError, IndexError, TypeError):
+                continue
+
+    for roi_observations_sequence in getattr(rs_ds, "RTROIObservationsSequence", []):
+        roi_number = getattr(roi_observations_sequence, "ReferencedROINumber", None)
+        if roi_number is None or roi_number not in contour_dict:
+            continue
+        contour_dict[roi_number]['interpreted_type'] = getattr(
+            roi_observations_sequence, "RTROIInterpretedType", "NOTAG"
+        )
 
     return contour_dict
 
@@ -71,6 +90,10 @@ def get_roi_number_to_name(
         dict: roi_number_to_name
     """
     roi_number_to_name = {}
-    for ssroi in rs_ds.StructureSetROISequence:
-        roi_number_to_name[ssroi.ROINumber] = ssroi.ROIName
+    for ssroi in getattr(rs_ds, "StructureSetROISequence", []):
+        roi_number = getattr(ssroi, "ROINumber", None)
+        if roi_number is None:
+            continue
+        roi_name = getattr(ssroi, "ROIName", None)
+        roi_number_to_name[roi_number] = roi_name if roi_name is not None else f"ROI_{roi_number}"
     return roi_number_to_name

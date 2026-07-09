@@ -24,8 +24,11 @@
 - Export Spatial (`REG`) and Deformable Spatial (`REG-DR`) registrations from SimpleITK transforms  
 - Parse deformable registration grids into NumPy displacement fields  
 - SimpleITK helpers for image building, resampling, and registration (`rigid`, `demons`, `bspline`, `soft_demons`)  
+- Rigid registration (`rigid_registration`): tunable Mattes mutual information and gradient-descent settings (histogram bins, learning rate, iterations, convergence); demons multiscale path: stricter resampling validation and clearer multiscale documentation  
 - Coordinate transformation utilities between pixel and patient spaces  
-- CT modality IOD helpers  
+- CT modality IOD helpers, plus **`CTBuilder`** to emit multi-slice CT DICOM datasets from SimpleITK images or numpy volumes (patient/study/series metadata and common orientations)  
+- SimpleITK preprocessing: **bilateral** and **median** denoising, and **N4 bias field correction** (`n4bfc`)  
+- Spatial / deformable REG parsing and transform extraction refined (inverse-matrix handling, cleaner registration dictionaries, displacement-grid extraction)  
 
 ---
 
@@ -44,7 +47,7 @@
 
 ### Dependencies
 
-- Python >= 3.8  
+- Python >= 3.10  
 - pydicom >= 2.0.0  
 - numpy >= 1.26.4  
 - opencv-python >= 4.10.0  
@@ -305,13 +308,15 @@ mask_dict = rtstruct_to_mask_dict(rs_ds, affine_mapping, mask_volume_shape)
   - `dose_ds_iod`: Dose IOD definitions  
 
 - **ct**: CT image data functionalities  
+  - `builder`: `CTBuilder` — build CT Image DICOM slices from a `sitk.Image` or numpy volume (with reference series for metadata)  
   - `ct_ds_iod`: CT IOD definitions  
 
 - **utils**: Utility tools  
   - `image_series_loader`: Load and sort DICOM image series  
   - `coordinate_transform`: Coordinate transformation utilities  
   - `validate_dcm_info`: Validate DICOM metadata  
-  - `sitk_transform`: SimpleITK conversions, `SimpleITKImageBuilder`, and resampling helpers  
+  - `sitk_transform`: SimpleITK conversions, `SimpleITKImageBuilder`, and resampling helpers (origin, spacing, and direction accept numpy arrays and are normalized for SimpleITK)  
+  - `sitk_image_process`: Bilateral / median denoise and N4 bias field correction (`bilateral_denoise`, `median_denoise`, `n4bfc`)  
   - `rs_from_altas`: Build RTSTRUCT datasets from atlas inputs  
 
 ---

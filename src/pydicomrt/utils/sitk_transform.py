@@ -26,10 +26,12 @@ class SimpleITKImageBuilder:
 
     def set_origin(self, origin: np.ndarray):
         assert origin.shape == (3,), "Origin must be a 3-element vector"
+        origin = origin.tolist()
         self.origin = origin
 
     def set_spacing(self, spacing: np.ndarray):
         assert spacing.shape == (3,), "Spacing must be a 3-element vector"
+        spacing = spacing.tolist()
         self.spacing = spacing
 
     def set_direction(self, direction: np.ndarray):
@@ -66,7 +68,7 @@ class SimpleITKImageBuilder:
         self.image = sitk.GetImageFromArray(self.volume)
         self.image.SetOrigin(self.origin)
         self.image.SetSpacing(self.spacing)
-        self.image.SetDirection(self.direction.ravel())
+        self.image.SetDirection(self.direction.ravel().tolist())
         return self.image
 
 def get_spacing_between_slices(series_data):

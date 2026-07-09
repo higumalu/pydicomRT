@@ -28,14 +28,16 @@ def sitk_displacement_field_to_deformable_registration_grid(transform: sitk.Disp
     Returns:
         Dataset: Dataset containing deformable registration grid information.
     """
-    displacement_field = sitk.GetArrayFromImage(transform.GetDisplacementField())
-    displacement_field = displacement_field.astype('<f4', copy=False)
-    vector_grid_data = displacement_field.ravel(order='C').tobytes()
+    # 先從 DisplacementFieldTransform 取出對應的影像，再從影像取得空間資訊
+    displacement_image = transform.GetDisplacementField()
+    displacement_field = sitk.GetArrayFromImage(displacement_image)
+    displacement_field = displacement_field.astype("<f4", copy=False)
+    vector_grid_data = displacement_field.ravel(order="C").tobytes()
 
-    origin = list(map(float, transform.GetOrigin()))
-    spacing = list(map(float, transform.GetSpacing()))
-    size = list(map(int, transform.GetSize()))
-    direction = transform.GetDirection()
+    origin = list(map(float, displacement_image.GetOrigin()))
+    spacing = list(map(float, displacement_image.GetSpacing()))
+    size = list(map(int, displacement_image.GetSize()))
+    direction = displacement_image.GetDirection()
     orientation = list(map(float, direction[:6]))
 
     deformable_registration_grid = Dataset()
