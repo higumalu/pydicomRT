@@ -1,6 +1,6 @@
 import SimpleITK as sitk
 
-def n4bfc(input_image: sitk.Image, shrink_factor: int = 1) -> tuple[sitk.Image, sitk.Image]:
+def n4_bias_field_correction(input_image: sitk.Image, shrink_factor: int = 1) -> tuple[sitk.Image, sitk.Image]:
     """
     Apply N4 bias field (shading) correction to a CT image, with optional downsampling for speed.
 

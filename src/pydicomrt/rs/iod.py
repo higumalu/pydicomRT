@@ -1,7 +1,7 @@
 from pydicom.multival import MultiValue
 from pydicom.uid import UID
 
-RT_STRUCTURE_SET_IOD = {
+RTSTRUCT_IOD = {
     "PatientID": {},
     "PatientName": {},
     "PatientBirthDate": {},

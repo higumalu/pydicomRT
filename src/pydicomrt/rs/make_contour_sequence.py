@@ -15,6 +15,46 @@ def add_contour_sequence_from_dcm_ctr_dict(
     roi_number: int,
     dcm_ctr_dict: dict
     ) -> Sequence:
+    """
+    Attach contour points to an ROI that already exists in the dataset.
+
+    A building block of :meth:`RTStructBuilder.add_roi_from_contours`; call the builder
+    unless you are assembling a dataset element by element.
+
+    Parameters
+    ----------
+    rs_ds : Dataset
+        RT Structure Set with an ROIContourSequence containing ``roi_number``. Modified
+        in place.
+    image_ds_list : list of Dataset
+        The referenced image series, used to match points to slices.
+    roi_number : int
+        ROINumber to attach to. Must already exist -- create it with
+        :func:`create_roi_into_rs_ds` first.
+    dcm_ctr_dict : dict
+        Points in patient coordinates, keyed by referenced SOP Instance UID::
+
+            {sop_instance_uid: {"sop_class_uid": str,
+                                "contours": [[x1, y1, z1, x2, y2, z2, ...], ...]}}
+
+        The layout :func:`get_contours` returns under ``"dcm_contour"``.
+
+    Returns
+    -------
+    Dataset
+        ``rs_ds``, modified in place. Despite the annotation this is the dataset, not a
+        ``Sequence``.
+
+    Raises
+    ------
+    ValueError
+        If ``rs_ds`` has no ROIContourSequence, or no item matches ``roi_number``.
+
+    See Also
+    --------
+    RTStructBuilder.add_roi_from_contours : The supported entry point.
+    add_contour_sequence_from_mask3d : Same, starting from a mask.
+    """
     if not hasattr(rs_ds, 'ROIContourSequence'):
         raise ValueError("ROIContourSequence does not exist")
 
@@ -43,6 +83,63 @@ def add_contour_sequence_from_mask3d(
         "ctr_precision": 8
         }
     ) -> Sequence:
+    """
+    Extract contours from a 3D mask and attach them to an existing ROI.
+
+    The building block behind :meth:`RTStructBuilder.add_roi`, and where the mask actually
+    becomes contours: ``cv2.findContours`` per slice, noise removal and low-pass filtering
+    per contour, then pixel-to-patient conversion.
+
+    Parameters
+    ----------
+    rs_ds : Dataset
+        RT Structure Set with an ROIContourSequence containing ``roi_number``. Modified
+        in place.
+    image_ds_list : list of Dataset
+        The referenced image series, sorted along the slice normal. Supplies the geometry
+        that turns pixel indices into patient coordinates.
+    roi_number : int
+        ROINumber to attach to. Must already exist.
+    mask_volume : np.ndarray
+        ``(slice, row, column)``, matching the series. Non-zero is inside the ROI.
+    ctr_config : dict, optional
+        Contour extraction tuning:
+
+        ``ex_noise_size`` : int
+            Drop exterior contours enclosing fewer than this many pixels.
+        ``in_noise_size`` : int
+            Same for interior contours -- holes.
+        ``lowpass_ratio`` : int
+            Fourier low-pass strength; higher keeps more detail and more staircasing.
+        ``ctr_precision`` : int
+            Decimal places kept in the written coordinates.
+
+        Defaults to ``DEFAULT_CONTOUR_CONFIG``. Note this is a mutable default shared
+        between calls -- pass a fresh dict rather than mutating it.
+
+    Returns
+    -------
+    Dataset
+        ``rs_ds``, modified in place. Despite the annotation this is the dataset, not a
+        ``Sequence``.
+
+    Raises
+    ------
+    ValueError
+        If ``rs_ds`` has no ROIContourSequence, or no item matches ``roi_number``.
+
+    See Also
+    --------
+    RTStructBuilder.add_roi : The supported entry point, which also checks the mask shape.
+    rtstruct_to_masks : The reverse direction.
+
+    Notes
+    -----
+    Filtering is lossy in both directions: it removes single-voxel speckle that would
+    otherwise become degenerate contours, and it rounds off genuine fine detail. For a
+    mask that must round-trip exactly, raise ``lowpass_ratio`` and set both noise sizes
+    to 0.
+    """
     if not hasattr(rs_ds, 'ROIContourSequence'):
         raise ValueError("ROIContourSequence does not exist")
 

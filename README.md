@@ -1,347 +1,388 @@
 # pydicomRT
 
-**pydicomRT** is a Python library for handling Radiation Therapy DICOM files. It provides utilities to create, modify, parse, and validate RTSTRUCT datasets; convert between RTSTRUCT and volumetric masks; and handle spatial/deformable registration and dose. It integrates smoothly with `pydicom`, `numpy`, and `SimpleITK`.
+Read and write radiotherapy DICOM objects — RTSTRUCT, Spatial and Deformable Registration,
+RTDOSE, CT Image — using the array types Python already speaks: `numpy` and `SimpleITK`.
+
+The goal is to keep the DICOM standard out of your way for the common tasks (turn a mask
+into contours, turn contours back into a mask, export a registration) while being explicit
+about the coordinate conventions that quietly corrupt results when you get them wrong.
+
+**中文說明：[README_zh.md](README_zh.md) · Working with an AI coding agent? [AGENTS.md](AGENTS.md)**
+
+This page is the tour. For the task-by-task manual — every parameter, every error message,
+and the 0.8 → 0.9 migration table — see **[docs/user-guide.md](docs/user-guide.md)**. For
+the per-function reference, generated from the docstrings, see
+**[docs/api-reference.md](docs/api-reference.md)**.
 
 ---
 
-## Project Goals
-
-- **Lower the development barrier for RT applications**  
-  Provide intuitive APIs and tools that allow researchers and engineers to work with radiation therapy–related DICOM files more easily, without requiring deep knowledge of the complex DICOM standard.  
-
-- **Enable seamless integration between Python 3D libraries and pydicom**  
-  Build a robust bridge so that common Python 3D image processing libraries (e.g., `numpy`, `SimpleITK`) can work seamlessly with `pydicom`, accelerating medical imaging and radiotherapy application development.  
-
----
-
-## Features
-
-- Build RTSTRUCT datasets and manage Regions of Interest (ROIs)  
-- Convert between 3D numpy masks and DICOM contours  
-- Validate RTSTRUCT, Spatial REG, Deformable REG, and RTDOSE datasets  
-- Load and sort DICOM image series with orientation/spacing sanity checks  
-- Generate RTDOSE datasets and convert RTDOSE DICOM files to SimpleITK images  
-- Export Spatial (`REG`) and Deformable Spatial (`REG-DR`) registrations from SimpleITK transforms  
-- Parse deformable registration grids into NumPy displacement fields  
-- SimpleITK helpers for image building, resampling, and registration (`rigid`, `demons`, `bspline`, `soft_demons`)  
-- Rigid registration (`rigid_registration`): tunable Mattes mutual information and gradient-descent settings (histogram bins, learning rate, iterations, convergence); demons multiscale path: stricter resampling validation and clearer multiscale documentation  
-- Coordinate transformation utilities between pixel and patient spaces  
-- CT modality IOD helpers, plus **`CTBuilder`** to emit multi-slice CT DICOM datasets from SimpleITK images or numpy volumes (patient/study/series metadata and common orientations)  
-- SimpleITK preprocessing: **bilateral** and **median** denoising, and **N4 bias field correction** (`n4bfc`)  
-- Spatial / deformable REG parsing and transform extraction refined (inverse-matrix handling, cleaner registration dictionaries, displacement-grid extraction)  
-
----
-
-## Quick Links
-
-- Examples: `example/try_demon_reg.py`, `example/try_sort_dcms.py`  
-- Deformable REG builder demo: `test/reg/df_reg_build_test.py`  
-- RTSTRUCT API: `src/pydicomrt/rs`  
-- Registration API: `src/pydicomrt/reg`  
-- Utilities: `src/pydicomrt/utils`  
-- Architecture Doc: `docs/architecture.md`
-
----
-
-## Installation
-
-### Dependencies
-
-- Python >= 3.10  
-- pydicom >= 2.0.0  
-- numpy >= 1.26.4  
-- opencv-python >= 4.10.0  
-- scipy >= 1.10.3  
-- simpleitk >= 2.5.0  
-
-### Install via pip
+## Install
 
 ```bash
 pip install pydicomrt
 ```
 
-### Install from source
+From source:
 
 ```bash
 git clone https://github.com/higumalu/pydicomRT.git
 cd pydicomRT
-pip install .
+pip install -e ".[dev]"
 ```
+
+Python ≥ 3.10, with `pydicom`, `numpy`, `SimpleITK`, `opencv-python`, `scipy`. The library
+is written against pydicom 3.
 
 ---
 
-## Usage Examples
+## What you can do with it
 
-### Create an RTSTRUCT Dataset and Add ROI
-
-```python
-import numpy as np
-from pydicomrt.rs.make_contour_sequence import add_contour_sequence_from_mask3d
-from pydicomrt.rs.add_new_roi import create_roi_into_rs_ds
-from pydicomrt.rs.builder import create_rtstruct_dataset
-from pydicomrt.utils.image_series_loader import load_sorted_image_series
-
-# Load DICOM image series
-ds_list = load_sorted_image_series("path/to/dicom/images")
-
-# Create an empty RTSTRUCT dataset
-rs_ds = create_rtstruct_dataset(ds_list)
-
-# Create an ROI (Region of Interest)
-rs_ds = create_roi_into_rs_ds(rs_ds, [0, 255, 0], 1, "CTV", "CTV")
-
-# Create a 3D mask
-mask = np.zeros((len(ds_list), 512, 512))
-mask[100:200, 100:400, 100:400] = 1
-mask[120:180, 200:300, 200:300] = 0
-
-# Add 3D mask to RTSTRUCT dataset
-rs_ds = add_contour_sequence_from_mask3d(rs_ds, ds_list, 1, mask)
-
-# Save the RTSTRUCT dataset
-rs_ds.save_as("path/to/output.dcm", write_like_original=False)
-```
+| Task | Entry point |
+|---|---|
+| Load and sort a DICOM image series | `utils.load_sorted_image_series` |
+| DICOM series → `sitk.Image` | `utils.sitk_transform.SimpleITKImageBuilder` |
+| Build an RTSTRUCT from masks | `rs.RTStructBuilder` |
+| RTSTRUCT → 3D masks | `rs.rtstruct_to_masks` |
+| Validate an RTSTRUCT / REG / dose / CT | `rs.check_rtstruct_iod`, `reg.check_spatial_reg_iod`, `dose.check_rtdose_iod`, `ct.check_ct_iod` |
+| Rigid / deformable registration | `reg.method.rigid_registration`, `reg.method.demons_registration` |
+| Export a registration to DICOM REG | `reg.SpatialRegistrationBuilder`, `reg.DeformableSpatialRegistrationBuilder` |
+| Read a DICOM REG | `reg.get_spatial_registrations`, `reg.get_deformable_registrations` |
+| Build an RTDOSE / read one back | `dose.RTDoseBuilder`, `dose.get_dose_image` |
+| Emit CT slices from a volume | `ct.CTBuilder` |
+| Denoise, N4 bias correction | `utils.sitk_image_process` |
 
 ---
 
-### Spatial Registration (Rigid) and DICOM REG Export
+## Conventions you need to know
 
-This example estimates a rigid transform between two CT series using SimpleITK and stores it in a DICOM Spatial Registration (REG) object.
+These four are where things go wrong silently — no exception, a perfectly normal-looking
+image, and only the physical coordinates are off. Read this section before the examples.
+
+### 0. Every builder reads the same way
+
+The five object builders share one vocabulary, so learning any of them teaches the rest:
+
+```python
+Builder(reference)      # patient/study context comes from the images
+    .set_something(...)  # single-valued configuration
+    .add_something(...)  # repeatable content
+    .build()             # -> FileDataset, or list[FileDataset] for CT
+```
+
+| Builder | Constructed with | Content added by |
+|---|---|---|
+| `rs.RTStructBuilder` | image series | `.add_roi(mask, name, ...)` |
+| `dose.RTDoseBuilder` | reference dataset | `.set_dose_grid(...)`, `.add_referenced_plan(...)` |
+| `ct.CTBuilder` | image series | `.set_volume(...)`, `.set_plane(...)` |
+| `reg.SpatialRegistrationBuilder` | fixed series | `.add_registration(moving, matrix)` |
+| `reg.DeformableSpatialRegistrationBuilder` | fixed series | `.add_registration(moving, dvf, pre, post)` |
+
+`set_*` and `add_*` return the builder, so calls chain. `build()` validates and raises rather
+than emitting an object that is missing a Type 1 element.
+
+Validation follows the same shape: `check_rtstruct_iod`, `check_spatial_reg_iod`,
+`check_deformable_reg_iod`, `check_rtdose_iod` and `check_ct_iod` all return
+`{"result": bool, "content": [...]}`.
+
+### 1. Axis order flips three times
+
+| Thing | Order |
+|---|---|
+| numpy volume stacked from a series | `(slice, row, column)` = `(z, y, x)` |
+| `sitk.Image` size / spacing / origin | `(x, y, z)` |
+| DICOM `PixelSpacing` | `[row spacing, column spacing]` = `(y, x)` |
+
+`PixelSpacing[0]` is the gap between **rows**, so it belongs on **y**, not **x**. Masks you
+hand to `RTStructBuilder.add_roi()` are `(slice, row, column)`.
+
+### 2. Registration transforms point from fixed to moving
+
+Everything this library returns from a registration is a **resampling transform**: it takes
+a point on the *fixed* grid and maps it back into the *moving* image. That is the direction
+`sitk.Resample` expects, so this works directly:
+
+```python
+transform = rigid_registration(fixed_image, moving_image)
+registered = sitk.Resample(moving_image, fixed_image, transform, sitk.sitkLinear, -1000.0)
+```
+
+A DICOM Spatial REG matrix points the **other way** — moving → fixed. Invert before exporting:
+
+```python
+matrix = affine_to_homogeneous_matrix(transform.GetInverse())
+```
+
+Both directions produce a file that loads without complaint, so the mistake surfaces as a
+shift applied backwards, often only noticed on the treatment machine. See
+`example/02_rigid_registration_to_reg.py`.
+
+### 3. Compose transforms, then resample once
+
+`sitk.CompositeTransform([a, b])` applies **b first**. Stage-ordered lists therefore need no
+reversing — use `compose_transforms([rigid, deformable])`. Apply the result in a single
+`Resample`. Resampling once per stage crops to the fixed grid after each stage, so anything
+one stage pushes out of view is replaced by padding and can never be brought back.
+
+### 4. Padding is not free
+
+Resampling outside a source image invents voxels. For CT that value is **-1000** (air).
+Padding with 0 wraps the patient in a shell of soft tissue that a similarity metric will
+happily try to match. `infer_default_pixel_value()` guesses from the intensity minimum,
+which only works on raw data — a window-clipped CT no longer looks like a CT. Pass
+`default_value` explicitly for MR, PET, or preprocessed images.
+
+---
+
+## Examples
+
+Every script in `example/` runs standalone on synthetic data — no patient files needed — and
+the snippets below are taken from them.
+
+```bash
+python example/01_rtstruct_from_mask.py
+python example/02_rigid_registration_to_reg.py
+python example/03_deformable_registration_to_reg.py
+python example/04_rtdose.py
+```
+
+### RTSTRUCT from a 3D mask, and back
 
 ```python
 import numpy as np
-import SimpleITK as sitk
-from pydicomrt.utils.image_series_loader import load_sorted_image_series
+from pydicomrt.rs import RTStructBuilder, calc_image_series_affine_mapping, rtstruct_to_masks
+from pydicomrt.utils import load_sorted_image_series
+
+series = load_sorted_image_series("path/to/ct")     # sorted along the slice normal
+
+mask = np.zeros((len(series), series[0].Rows, series[0].Columns), dtype=np.uint8)
+mask[8:16, 30:60, 30:60] = 1                        # (slice, row, column)
+
+rs_ds = (
+    RTStructBuilder(series)
+    .add_roi(mask=mask, name="CTV", color=[0, 255, 0])
+    .build()
+)
+
+rs_ds.save_as("rtstruct.dcm", enforce_file_format=True)
+
+# read it back — the affine and shape come from the image series, not the RTSTRUCT
+affine_mapping, mask_shape = calc_image_series_affine_mapping(series)
+masks = rtstruct_to_masks(rs_ds, affine_mapping, mask_shape)
+recovered = np.asarray(masks["CTV"]["mask_volume"])
+```
+
+### Rigid registration exported as DICOM REG
+
+Note the `.GetInverse()` — see convention 2 above.
+
+```python
+import numpy as np
+from pydicomrt.reg import SpatialRegistrationBuilder, affine_to_homogeneous_matrix
+from pydicomrt.reg.method import rigid_registration
 from pydicomrt.utils.sitk_transform import SimpleITKImageBuilder
-from pydicomrt.reg.method.rigid import rigid_registration
-from pydicomrt.reg.type_transform import affine_to_homogeneous_matrix
-from pydicomrt.reg.builder import SpatialRegistrationBuilder
 
-# Load CT series as pydicom datasets
-fixed_ds = load_sorted_image_series("/path/to/CT_fixed")
-moving_ds = load_sorted_image_series("/path/to/CT_moving")
+fixed_image = SimpleITKImageBuilder().from_image_series(fixed_series)
+moving_image = SimpleITKImageBuilder().from_image_series(moving_series)
 
-# Convert to SimpleITK images
-fixed_img = SimpleITKImageBuilder().from_ds_list(fixed_ds)
-moving_img = SimpleITKImageBuilder().from_ds_list(moving_ds)
+resampling_transform = rigid_registration(fixed_image, moving_image)   # fixed -> moving
 
-# Run rigid registration in physical space (returns sitk.Transform)
-rigid_tfm = rigid_registration(fixed_img, moving_img)
-
-# Convert to 4x4 row-major list for DICOM REG
-tfm_4x4 = affine_to_homogeneous_matrix(rigid_tfm).astype(np.float32).ravel().tolist()
-
-# Build a DICOM Spatial Registration dataset and save
-builder = SpatialRegistrationBuilder(fixed_ds)
-builder.set_uid_prefix("1.2.826.0.1.3680043.2.1125.")  # Optional but helps keep UIDs consistent
-builder.add_rigid_registration(moving_ds, tfm_4x4)
-reg_ds = builder.build()
-reg_ds.save_as("/path/to/output_reg.dcm", write_like_original=False)
+reg_matrix = affine_to_homogeneous_matrix(resampling_transform.GetInverse())  # moving -> fixed
+reg_ds = (
+    SpatialRegistrationBuilder(fixed_series)           # built with the FIXED series
+    .set_uid_prefix("1.2.826.0.1.3680043.2.1125.")
+    .add_registration(moving_series, reg_matrix.astype(np.float32).ravel().tolist())
+    .build()
+)
+reg_ds.save_as("registration.dcm", enforce_file_format=True)
 ```
 
-Notes:
-- DICOM stores transforms as a 4x4 row-major matrix in the fixed image frame. Ensure transform directions match your use-case.
-- You can set a custom UID root globally via the `DICOM_UID_PREFIX` environment variable.
+The builder validates the matrix before writing it — 16 elements, a `[0, 0, 0, 1]` bottom
+row, and a genuine rotation when the type is `RIGID`. Pass `matrix_type="RIGID_SCALE"` or
+`"AFFINE"` if scaling or shear is intended. It also appends an identity item for the fixed
+Frame of Reference, which is what marks the frame the other matrices are relative to; pass
+`build(include_identity=False)` if a downstream system objects.
 
----
-
-### Deformable Spatial Registration (Demons) Export
-
-This workflow performs a rigid pre-align, runs demons registration, and exports the resulting displacement field into a DICOM Deformable Spatial Registration dataset.
+Reading one back:
 
 ```python
-import numpy as np
+from pydicom import dcmread
+from pydicomrt.reg import get_spatial_registrations
+
+reg = get_spatial_registrations(dcmread("registration.dcm"))
+matrix = reg[fixed_frame_of_reference_uid][moving_frame_of_reference_uid]   # moving -> fixed
+```
+
+### Deformable registration exported as DICOM REG
+
+Deformable REG maps fixed → moving. For rigid followed by deformable registration,
+export the residual field with an identity pre-matrix and the forward rigid post-matrix.
+Do not invert the rigid transform for this object.
+
+```python
 import SimpleITK as sitk
-from pydicomrt.utils.image_series_loader import load_sorted_image_series
-from pydicomrt.utils.sitk_transform import SimpleITKImageBuilder, resample_to_reference_image
-from pydicomrt.reg.method.rigid import rigid_registration
-from pydicomrt.reg.method.demons import demons_registration
-from pydicomrt.reg.type_transform import affine_to_homogeneous_matrix
-from pydicomrt.reg.builder import DeformableSpatialRegistrationBuilder
+from pydicomrt.reg import DeformableSpatialRegistrationBuilder, affine_to_homogeneous_matrix
+from pydicomrt.reg.method import demons_registration, rigid_registration
 
-fixed_ds = load_sorted_image_series("/path/to/CT_fixed")
-moving_ds = load_sorted_image_series("/path/to/CT_moving")
-fixed_img = SimpleITKImageBuilder().from_ds_list(fixed_ds)
-moving_img = SimpleITKImageBuilder().from_ds_list(moving_ds)
-
-# Ensure voxel grids match before registration
-moving_img = resample_to_reference_image(fixed_img, moving_img)
-
-# Rigid pre-alignment
-rigid_tfm = rigid_registration(fixed_img, moving_img)
-rigid_matrix = affine_to_homogeneous_matrix(rigid_tfm).astype(np.float32).ravel().tolist()
+rigid_transform = rigid_registration(fixed_image, moving_image)
 moving_rigid = sitk.Resample(
-    moving_img,
-    fixed_img,
-    rigid_tfm,
-    sitk.sitkLinear,
-    -1000.0,
-    moving_img.GetPixelIDValue(),
+    moving_image, fixed_image, rigid_transform, sitk.sitkLinear, -1000.0, moving_image.GetPixelID()
 )
 
-# Demons deformable registration (returns registered image, transform, displacement field)
-reg_img, deform_tfm, dvf = demons_registration(fixed_img, moving_rigid, verbose=False)
+_, deformable_transform, displacement_field = demons_registration(fixed_image, moving_rigid)
 
-# Export to DICOM Deformable Spatial Registration
-identity = np.eye(4, dtype=np.float32).ravel().tolist()
-
-builder = DeformableSpatialRegistrationBuilder(fixed_ds)
-builder.add_deformable_registration(
-    moving_ds_list=moving_ds,
-    vectorial_field_transform=deform_tfm,
-    pre_transform=rigid_matrix,
-    post_transform=identity,
+reg_ds = (
+    DeformableSpatialRegistrationBuilder(fixed_series)
+    .add_registration(
+        moving_series=moving_series,
+        vectorial_field_transform=deformable_transform,
+        pre_transform=np.eye(4).ravel().tolist(),
+        post_transform=affine_to_homogeneous_matrix(rigid_transform).ravel().tolist(),
+    )
+    .build()
 )
-reg_dr = builder.build()
-reg_dr.save_as("/path/to/output_dr.dcm", write_like_original=False)
+reg_ds.save_as("deformable_registration.dcm", enforce_file_format=True)
 ```
 
-`demons_registration` returns a SimpleITK displacement-field transform (`deform_tfm`) and a DVF image (`dvf`). The builder converts the transform into the DICOM `VectorGridData` representation automatically.
-
----
-
-### Parse a Deformable Registration Dataset
+### RTDOSE
 
 ```python
-from pydicom import dcmread
-from pydicomrt.reg.parser import get_deformable_reg_list
+from pydicomrt.dose import RTDoseBuilder, get_dose_image
 
-reg_ds = dcmread("/path/to/output_dr.dcm")
-reg_entries = get_deformable_reg_list(reg_ds)
-field = reg_entries[0]["DeformableRegistrationGrid"]["VectorGridData"]
-print(field.shape)  # (z, y, x, 3) float32 displacement vectors in mm
+dose_ds = (
+    RTDoseBuilder(reference_ds)          # patient/study context
+    .set_dose_grid(dose_sitk_image)      # geometry + scaled pixel data
+    .add_referenced_plan(plan_ds)        # DoseSummationType PLAN makes this Type 1C
+    .build()
+)
+dose_ds.save_as("rtdose.dcm", enforce_file_format=True)
+
+dose_image = get_dose_image(dose_ds)     # back to sitk, DoseGridScaling applied
 ```
 
 ---
 
-### Create an RTDOSE Dataset from a SimpleITK Image
+## Registration: what is and is not validated
 
-```python
-import SimpleITK as sitk
-from pydicom import dcmread
-from pydicomrt.dose.builder import generate_base_dataset, cp_information_from_ds, add_dose_grid_to_ds
+Registration quality is the part most likely to disappoint, so here is the measured state
+rather than a claim.
 
-reference = dcmread("path/to/reference_ct_or_plan.dcm")
-dose_img = sitk.ReadImage("path/to/dose_image.nii.gz")
+**Verified against a real planning CT / CBCT pair and the TPS registration relating them**
+(one pelvis case, single-threaded):
 
-dose_ds = generate_base_dataset()
-dose_ds = cp_information_from_ds(dose_ds, reference)
-dose_ds = add_dose_grid_to_ds(dose_ds, dose_img)
+- Series loading matches SimpleITK's own GDCM reader exactly — geometry and voxel values.
+- `get_spatial_registrations` reads the TPS registration correctly, in the documented direction.
+- `rigid_registration` reproduces the clinical registration to 7.5 mm overall, with the
+  superior-inferior axis — the one that used to be worst — under 1 mm.
 
-dose_ds.save_as("path/to/output_dose.dcm", write_like_original=False)
+Measured offsets from the TPS transform, in mm, as `(x, y, z)`, single-threaded:
+
+| `optimizer=` | offset | distance | time |
+|---|---|---|---|
+| `"regular_step"` (default) | `(+2.8, −7.0, −0.9)` | **7.5** | ~9 min |
+| `"gradient_descent"` | `(+1.4, −8.0, −36.7)` | 37.5 | ~1 min |
+
+`"gradient_descent"` can take an estimated first step, overshoot into a flat region, and
+have its convergence window then report success — returning an alignment *worse than its own
+starting point* without raising anything. `"regular_step"` shrinks its step whenever the
+gradient reverses, so it cannot run away. The default is the slow, reliable one; the fast
+path stays selectable for previews and pipelines that re-run often.
+
+**Known gaps:**
+
+- **The remaining ~7 mm is almost entirely anterior-posterior, and is not obviously the
+  library's error.** Sweeping y around the clinical answer shows full-field-of-view mutual
+  information peaking about 10 mm away from it — on this pair, the metric and the TPS
+  genuinely disagree. Narrowing it would mean restricting the metric to an ROI, which is not
+  implemented. One case is not a validation: check the residual against your own tolerance.
+- **Results are only reproducible single-threaded.** ITK reduces metric values in thread
+  completion order; thread count moved the answer by more than 15 mm on the real pair. Call
+  `sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(1)` when you need determinism.
+- **Only axial acquisitions have been run end to end.** Oblique and anisotropic geometry is
+  implemented and unit-tested, but not exercised on a real study.
+
+Two gaps that used to sit here have since closed, and both had been written up with a
+plausible explanation first. The superior-inferior error was blamed on the CBCT's limited
+field of view; it was the optimizer walking away from a correct position. The pipeline was
+blamed on field-of-view mismatch; it was resampling both images onto one grid before
+registering, which left the centred initializer nothing to estimate. Worth remembering
+before accepting the next "the data is just hard" explanation.
+
+---
+
+## Module layout
+
+| Module | Contents |
+|---|---|
+| `rs` | `builder`, `add_new_roi`, `make_contour_sequence`, `parser`, `check`, `iod`, `rs_to_volume`, `contour_process_method` |
+| `reg` | `builder`, `parser`, `check`, `iod`, `type_transform` |
+| `reg.method` | `rigid`, `demons`, `soft_demons`, `bspline`, `common` |
+| `reg.pipeline` | `registration_pipeline`, `compose_transforms`, `preprocessing` |
+| `dose` | `builder`, `check`, `iod`, `sitk_transform` |
+| `ct` | `builder`, `check`, `iod` |
+| `utils` | `image_series_loader`, `coordinate_transform`, `sitk_transform`, `validate_dcm_info`, `sitk_image_process` |
+
+Each package re-exports its public API, so `from pydicomrt.rs import ...` is enough — you
+should not need to reach into submodules.
+
+See [docs/user-guide.md](docs/user-guide.md) for the full manual,
+[docs/api-reference.md](docs/api-reference.md) for every function's parameters, and
+[docs/architecture.md](docs/architecture.md) for data flow and extension points.
+
+UID roots: RTSTRUCT and RTDOSE honour the `DICOM_UID_PREFIX` environment variable; the
+registration and CT builders take `set_uid_prefix()`.
+
+---
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+pytest                  # ~295 tests, ~34 s
+pytest -m slow          # real-data registrations, ~22 min
 ```
 
-To convert an RTDOSE DICOM dataset back to SimpleITK, use `pydicomrt.dose.sitk_transform.get_dose_sitk_image`.
+Tests build their own DICOM series and phantoms in memory — no patient data required.
+Builders live in `test/synthetic.py`, fixtures in `test/conftest.py`.
 
----
+### Testing against real clinical data
 
-### Extract Contour Information from RTSTRUCT Dataset
+`test/real_data/` is an optional layer that runs against a real planning CT, an
+on-treatment CBCT, and the TPS registration relating them. It skips cleanly when the data is
+absent. Lay the directory out as:
 
-```python
-from pydicomrt.rs.parser import get_roi_number_to_name, get_contour_dict
-
-# Get ROI mapping
-roi_map = get_roi_number_to_name(rs_ds)
-print(roi_map)  # Output: {1: 'CTV'}
-
-# Get contour dictionary
-ctr_dict = get_contour_dict(rs_ds)
+```
+<testdata>/CTSIM/*.dcm          planning CT series
+<testdata>/CBCT/*.dcm           on-treatment CBCT series
+<testdata>/registration.dcm     Spatial Registration produced by the TPS
 ```
 
----
-
-### Validate RTSTRUCT Dataset
-
-```python
-from pydicomrt.rs.checker import check_rs_iod
-
-# Check whether the RTSTRUCT dataset conforms to IOD specification
-result = check_rs_iod(rs_ds)
-print(result)  # Output: {'result': True, 'content': []}
+```bash
+PYDICOMRT_TESTDATA=/path/to/testdata pytest test/real_data
+PYDICOMRT_TESTDATA=/path/to/testdata pytest test/real_data -m slow
 ```
 
----
+Keep the data out of the repository — `testdata/` is gitignored.
 
-### Convert RTSTRUCT to 3D Mask
+### If you are adding tests
 
-```python
-from pydicomrt.rs.rs_to_volume import rtstruct_to_mask_dict, calc_image_series_affine_mapping
-from pydicomrt.utils.image_series_loader import load_sorted_image_series
-
-# Load DICOM image series
-ds_list = load_sorted_image_series("path/to/dicom/images")
-
-# Calculate affine mapping and mask volume shape
-affine_mapping, mask_volume_shape = calc_image_series_affine_mapping(ds_list)
-
-# Convert RTSTRUCT to 3D mask dictionary
-mask_dict = rtstruct_to_mask_dict(rs_ds, affine_mapping, mask_volume_shape)
-```
-
----
-
-## Module Structure
-
-- **rs**: RTSTRUCT-related functionalities  
-  - `builder`: Create RTSTRUCT datasets  
-  - `add_new_roi`: Add new ROIs  
-  - `make_contour_sequence`: Create contour sequences  
-  - `parser`: Parse RTSTRUCT datasets  
-  - `checker`: Validate RTSTRUCT datasets  
-  - `rs_to_volume`: Convert between RTSTRUCT and volume data  
-  - `packer`: Pack contour data  
-  - `contour_process_method`: Contour processing methods  
-  - `rs_ds_iod`: RTSTRUCT IOD definitions  
-
-- **reg**: Spatial/deformable registration  
-  - `builder`: Build DICOM REG / Deformable REG datasets  
-  - `parser`: Extract spatial/deformable transforms (e.g., `get_deformable_reg_list`)  
-  - `check`: Validate registration datasets  
-  - `method`: SimpleITK registration helpers (`rigid`, `bspline`, `demons`, `soft_demons`)  
-  - `ds_reg_ds_iod`: Deformable spatial registration IOD definitions  
-  - `s_reg_ds_iod`: Spatial registration IOD definitions  
-  - `type_transform`: Transform conversions (affine → homogeneous, displacement fields → DICOM grids)  
-
-- **dose**: Dose distribution functionalities  
-  - `builder`: Create dose datasets  
-  - `sitk_transform`: Convert dose datasets to SimpleITK images  
-  - `dose_ds_iod`: Dose IOD definitions  
-
-- **ct**: CT image data functionalities  
-  - `builder`: `CTBuilder` — build CT Image DICOM slices from a `sitk.Image` or numpy volume (with reference series for metadata)  
-  - `ct_ds_iod`: CT IOD definitions  
-
-- **utils**: Utility tools  
-  - `image_series_loader`: Load and sort DICOM image series  
-  - `coordinate_transform`: Coordinate transformation utilities  
-  - `validate_dcm_info`: Validate DICOM metadata  
-  - `sitk_transform`: SimpleITK conversions, `SimpleITKImageBuilder`, and resampling helpers (origin, spacing, and direction accept numpy arrays and are normalized for SimpleITK)  
-  - `sitk_image_process`: Bilateral / median denoise and N4 bias field correction (`bilateral_denoise`, `median_denoise`, `n4bfc`)  
-  - `rs_from_altas`: Build RTSTRUCT datasets from atlas inputs  
-
----
-
-## Contributing
-
-Issues and pull requests are welcome!
+- Assert on the **mapping** (where a transform sends probe points), not on raw transform
+  parameters. One mapping has many parameter representations, and a centred transform's
+  `GetTranslation()` is not its offset.
+- Geometry changes need a case with **anisotropic** spacing or a **rotated** orientation.
+  Square-pixel axial fixtures pass whether or not the code is correct.
+- `conftest.py` pins SimpleITK to one thread, for the reason given above.
 
 ---
 
 ## Reference
 
-- [SimpleITK](https://simpleitk.org/)
-- [pydicom](https://pydicom.github.io/)
-- [RT-Utils](https://github.com/qurit/rt-utils)
-- [PlatiPy](https://github.com/pyplati/platipy)
-
----
+- [SimpleITK](https://simpleitk.org/) · [pydicom](https://pydicom.github.io/)
+- [RT-Utils](https://github.com/qurit/rt-utils) · [PlatiPy](https://github.com/pyplati/platipy)
 
 ## License
 
-This project is licensed under the MIT License - see the `LICENSE` file for details.
-
----
+MIT — see [LICENSE](LICENSE).
 
 ## Author
 
-- Higumalu (higuma.lu@gmail.com)
+Higumalu (higuma.lu@gmail.com)

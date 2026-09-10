@@ -93,7 +93,7 @@
 #         if length < indices[1]:
 #             length = indices[1] + 1
 #     except IndexError:
-#         print("no other freq. > 10")
+#         logger.debug("No secondary frequency above the low-pass threshold; using fallback length")
 #         length = int(wave_length * 10 * 0.01)
     
 #     mask[0] = 1
@@ -105,8 +105,11 @@
 #     newZ = fft.ifft(C)  # C -> R
 #     return np.real(newZ), np.imag(newZ)
 
+import logging
 import numpy as np
 import math
+
+logger = logging.getLogger(__name__)
 
 def contour_process(x_points, y_points, hierarchy, *args, **kwargs):
     # print(x_points, y_points, hierarchy, args, kwargs)
@@ -203,7 +206,7 @@ def fft_low_pass(x, y, filter_ratio=8):
         if length < indices[1]:
             length = indices[1] + 1
     except IndexError:
-        print("no other freq. > 10")
+        logger.debug("No secondary frequency above the low-pass threshold; using fallback length")
         length = int(wave_length * 10 * 0.01)
     
     mask[0] = 1

@@ -10,6 +10,45 @@ def create_roi_into_rs_ds(
     roi_description: str,
     roi_interpreted_type: str = "ORGAN",
     ) -> Dataset:
+    """
+    Declare an ROI in all three sequences an RTSTRUCT needs it in.
+
+    An ROI is not one element but three parallel entries, cross-referenced by ROINumber:
+    StructureSetROISequence (name and frame of reference), ROIContourSequence (colour and,
+    later, the contours), and RTROIObservationsSequence (interpreted type). Adding it to
+    only some of them produces a file most TPSs silently ignore.
+
+    This creates all three, with an empty ContourSequence for the contour extraction to
+    fill. Called by :meth:`RTStructBuilder.add_roi`, which is the supported entry point.
+
+    Parameters
+    ----------
+    rs_ds : Dataset
+        RT Structure Set with the three sequences present, from
+        :func:`create_rtstruct_dataset`. Modified in place.
+    roi_color : list of int
+        ROIDisplayColor as RGB, 0-255.
+    roi_number : int
+        ROINumber. Must be unique within the dataset; nothing here enforces that.
+    roi_name : str
+        ROIName, as the TPS displays it.
+    roi_description : str
+        ROIDescription. May be empty.
+    roi_interpreted_type : str, optional
+        RTROIInterpretedType, e.g. ``"ORGAN"``, ``"PTV"``, ``"CTV"``, ``"EXTERNAL"``.
+        Default ``"ORGAN"``.
+
+    Returns
+    -------
+    Dataset
+        ``rs_ds``, modified in place.
+
+    See Also
+    --------
+    RTStructBuilder.add_roi : Adds the ROI *and* its contours, and rejects duplicate
+        numbers.
+    add_contour_sequence_from_mask3d : Fills in the contours afterwards.
+    """
     frame_of_ref_uid = rs_ds.FrameOfReferenceUID
     rs_ds.StructureSetROISequence.append(create_empty_structure_set_roi(roi_number, roi_name, roi_description, frame_of_ref_uid))
     rs_ds.ROIContourSequence.append(create_empty_roi_contour_sequence(roi_number, roi_color))
