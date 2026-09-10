@@ -1,7 +1,7 @@
 from pydicom.uid import UID
 
 # RT Dose CIOD
-RT_DOSE_IOD = {
+RTDOSE_IOD = {
     "PatientID": {},
     "PatientName": {},
     "PatientBirthDate": {},
@@ -35,7 +35,7 @@ RT_DOSE_IOD = {
 
     "DoseUnits": {"value": "GY"},
     "DoseType": {},
-    "DoseSummationType": {"value": "PLAN"},
+    "DoseSummationType": {},
     "GridFrameOffsetVector": {},
 
     "PixelData": {},

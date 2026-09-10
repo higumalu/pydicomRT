@@ -1,4 +1,37 @@
+import logging
+import numpy as np
 import SimpleITK as sitk
+from .common import apply_transform, registration_command_iteration
+
+logger = logging.getLogger(__name__)
+
+
+def to_centre_free_affine(transform) -> sitk.AffineTransform:
+    """
+    Rewrite a centred rigid transform as an equivalent affine with its centre at the origin.
+
+    A centred transform maps ``y = R (x - C) + C + T``. Copying only ``R`` and ``T`` into a
+    centre-free affine silently drops the ``(I - R) C`` term, which is zero only while the
+    rotation is identity -- so the error appears exactly once the optimizer starts rotating.
+    Folding the centre into the translation keeps the mapping identical, which matters
+    because the DICOM REG matrix has nowhere to record a rotation centre.
+
+    Args:
+        transform: A SimpleITK transform exposing GetMatrix/GetTranslation/GetCenter.
+
+    Returns:
+        sitk.AffineTransform: Transform with centre (0, 0, 0) and the same point mapping.
+    """
+    rotation = np.array(transform.GetMatrix()).reshape(3, 3)
+    centre = np.array(transform.GetCenter())
+    translation = np.array(transform.GetTranslation())
+
+    offset = centre + translation - rotation @ centre
+
+    affine_transform = sitk.AffineTransform(3)
+    affine_transform.SetMatrix(transform.GetMatrix())
+    affine_transform.SetTranslation(offset.tolist())
+    return affine_transform
 
 
 def rigid_registration(
@@ -6,32 +39,123 @@ def rigid_registration(
     moving_image: sitk.Image,
     histogram_bins: int = 100,
     learning_rate: float = 2.0,
-    iterations: int = 100,
+    iterations: int = 300,
+    shrink_factors=(4, 2, 1),
+    smoothing_sigmas=(2.0, 1.0, 0.0),
+    optimizer: str = "regular_step",
+    relaxation_factor: float = 0.7,
+    min_step_mm: float = 1e-4,
     convergence_minimum_value: float = 1e-6,
     convergence_window_size: int = 10,
+    max_step_size_mm: float = 2.0,
     ) -> sitk.Transform:
     """
-    Perform rigid registration between two 3D images using SimpleITK.
+    Rigidly align a moving image to a fixed image.
 
-    This function aligns a moving image to a fixed image by estimating
-    a rigid transformation (translation + rotation, no scaling/shearing).
-    The method uses Mattes Mutual Information as a similarity metric,
-    a gradient descent optimizer, and returns an affine transform
-    containing only the rigid components.
+    Estimates translation and rotation only -- no scaling, no shear -- by maximising
+    Mattes mutual information over a multi-resolution pyramid. Mutual information rather
+    than intensity difference, so CT-to-CBCT and CT-to-MR work without matching intensity
+    scales.
 
-    Args:
-        fixed_image (sitk.Image): The reference image to which the moving image is aligned.
-        moving_image (sitk.Image): The image to be registered (transformed).
-        histogram_bins (int, optional): Number of histogram bins for Mattes Mutual Information metric. Default = 50.
-        learning_rate (float, optional): Step size for gradient descent optimizer. Default = 1.0.
-        iterations (int, optional): Maximum number of optimizer iterations. Default = 100.
-        convergence_minimum_value (float, optional): Minimum convergence value for optimizer stopping criterion. Default = 1e-6.
-        convergence_window_size (int, optional): Window size for convergence checking. Default = 10.
+    Parameters
+    ----------
+    fixed_image : sitk.Image
+        The reference. The result is expressed on this image's grid.
+    moving_image : sitk.Image
+        The image to align.
+    histogram_bins : int, optional
+        Bins for Mattes mutual information. Default 100.
+    learning_rate : float, optional
+        Initial optimizer step. Default 2.0.
+    iterations : int, optional
+        Maximum optimizer iterations per resolution level. Default 300.
+    shrink_factors : sequence of int or None, optional
+        Downsampling factor per level, coarsest first. ``None`` gives a single-resolution
+        registration. Default ``(4, 2, 1)``.
+    smoothing_sigmas : sequence of float or None, optional
+        Gaussian sigma in mm per level, matching ``shrink_factors`` element for element.
+        Default ``(2.0, 1.0, 0.0)``.
+    optimizer : {"regular_step", "gradient_descent"}, optional
+        Default ``"regular_step"``. See Notes -- the default is slower and much more
+        reliable.
+    relaxation_factor : float, optional
+        regular_step only. The step is multiplied by this whenever the gradient direction
+        reverses. Default 0.7.
+    min_step_mm : float, optional
+        regular_step only. Stop once the step falls below this. Default 1e-4.
+    convergence_minimum_value : float, optional
+        gradient_descent only. Default 1e-6.
+    convergence_window_size : int, optional
+        gradient_descent only. Default 10.
+    max_step_size_mm : float, optional
+        gradient_descent only. Upper bound on a single step in mm; 0.0 leaves it
+        unbounded. Default 2.0.
 
-    Returns:
-        sitk.Transform: An affine transform containing only rotation and translation
-                        that aligns the moving image to the fixed image.
+    Returns
+    -------
+    sitk.Transform
+        An affine transform holding rotation and translation only, pointing **fixed to
+        moving** -- a *resampling* transform, the direction ``sitk.Resample`` expects.
+        Invert it before storing in a DICOM Spatial REG, which runs moving to fixed.
+        Keep its direction when using it as a Deformable REG post-matrix.
+
+    Raises
+    ------
+    ValueError
+        If ``shrink_factors`` and ``smoothing_sigmas`` differ in length, or the optimizer
+        name is unknown.
+
+    See Also
+    --------
+    registration_pipeline : Adds preprocessing and an optional deformable stage.
+    demons_registration : Deformable refinement, to run after this.
+    SpatialRegistrationBuilder : Export the result as DICOM.
+
+    Notes
+    -----
+    ``"gradient_descent"`` can return a *worse* alignment than its own initialisation and
+    still report convergence: it takes an estimated first step, overshoots into a flat
+    region, and the convergence window then sees the metric stop changing. On a real
+    CT/CBCT pair it finished 37 mm from the clinical registration, almost all of it
+    superior-inferior.
+
+    ``"regular_step"`` shrinks its step by ``relaxation_factor`` whenever the gradient
+    reverses, so it cannot run away from a good position. On the same pair it finished
+    7.5 mm out, with the residual concentrated where the metric itself disagrees with the
+    clinical answer. It costs roughly 8x the wall time -- about 9 minutes rather than 1 on
+    full-size volumes -- which is why the fast path is still selectable.
+
+    Registration is only bit-reproducible single-threaded: ITK reduces the metric in
+    thread-completion order, and on that real pair the thread count moved the answer by
+    more than 15 mm. Call
+    ``sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(1)`` when you need determinism.
+
+    Starting position is estimated with ``CenteredTransformInitializer`` on the two
+    images' geometry. Resampling both onto a common grid beforehand destroys that estimate
+    -- there is then nothing to centre -- so register in the images' own grids.
+
+    Examples
+    --------
+    >>> transform = rigid_registration(fixed_image, moving_image)      # doctest: +SKIP
+    >>> registered = sitk.Resample(                                    # doctest: +SKIP
+    ...     moving_image, fixed_image, transform, sitk.sitkLinear, -1000.0)
+
+    A quick preview, at the cost of reliability:
+
+    >>> transform = rigid_registration(                                # doctest: +SKIP
+    ...     fixed_image, moving_image, optimizer="gradient_descent")
     """
+    if optimizer not in ("regular_step", "gradient_descent"):
+        raise ValueError(
+            f"optimizer must be 'regular_step' or 'gradient_descent', got {optimizer!r}"
+        )
+
+    if shrink_factors is not None and smoothing_sigmas is not None:
+        if len(shrink_factors) != len(smoothing_sigmas):
+            raise ValueError(
+                "shrink_factors and smoothing_sigmas must describe the same number of "
+                f"resolution levels (got {len(shrink_factors)} and {len(smoothing_sigmas)})"
+            )
 
     # Ensure both images are float32 for numerical stability in registration
     fixed_image = sitk.Cast(fixed_image, sitk.sitkFloat32)
@@ -46,27 +170,46 @@ def rigid_registration(
     # Use linear interpolation for resampling the moving image
     registration_method.SetInterpolator(sitk.sitkLinear)
 
-    # Configure the optimizer as gradient descent with given parameters
-    registration_method.SetOptimizerAsGradientDescent(
-        learningRate=learning_rate,
-        numberOfIterations=iterations,
-        convergenceMinimumValue=convergence_minimum_value,
-        convergenceWindowSize=convergence_window_size,
-    )
+    # A step that shrinks on gradient reversal cannot walk away from a good alignment,
+    # which plain gradient descent demonstrably does -- see the docstring note.
+    if optimizer == "regular_step":
+        registration_method.SetOptimizerAsRegularStepGradientDescent(
+            learningRate=learning_rate,
+            minStep=min_step_mm,
+            numberOfIterations=iterations,
+            relaxationFactor=relaxation_factor,
+            gradientMagnitudeTolerance=1e-8,
+            maximumStepSizeInPhysicalUnits=0.0,
+        )
+    else:
+        registration_method.SetOptimizerAsGradientDescent(
+            learningRate=learning_rate,
+            numberOfIterations=iterations,
+            convergenceMinimumValue=convergence_minimum_value,
+            convergenceWindowSize=convergence_window_size,
+            estimateLearningRate=registration_method.Once,
+            maximumStepSizeInPhysicalUnits=max_step_size_mm,
+        )
 
     # Scale optimizer step sizes according to physical units of the image
     registration_method.SetOptimizerScalesFromPhysicalShift()
 
-    # Initialize with a centered rigid transform (rotation + translation)
+    # Coarse-to-fine: the coarse levels carry the transform most of the way before the
+    # fine level refines it, which is what gives the optimizer a usable capture range.
+    if shrink_factors is not None:
+        registration_method.SetShrinkFactorsPerLevel(list(shrink_factors))
+        registration_method.SetSmoothingSigmasPerLevel(list(smoothing_sigmas))
+        registration_method.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
+
+    # Initialize with a centered rigid transform (rotation + translation). The centre stays
+    # at the image centre: rotating about a far-away world origin makes the versor
+    # parameters badly conditioned, since a small angle becomes a large displacement.
     initial_transform = sitk.CenteredTransformInitializer(
         fixed_image,
         moving_image,
         sitk.VersorRigid3DTransform(),
         sitk.CenteredTransformInitializerFilter.GEOMETRY
     )
-
-    # Explicitly set the center to (0,0,0) – prevents unwanted shifting
-    initial_transform.SetCenter((0.0, 0.0, 0.0))
 
     # Assign the initial transform to the registration method
     registration_method.SetInitialTransform(initial_transform, inPlace=False)
@@ -81,11 +224,7 @@ def rigid_registration(
         transform = final_transform
 
     # Convert rigid transform into an affine transform (matrix + translation only)
-    affine_transform = sitk.AffineTransform(3)
-    affine_transform.SetMatrix(transform.GetMatrix())       # Rotation part
-    affine_transform.SetTranslation(transform.GetTranslation())  # Translation part
-
-    return affine_transform
+    return to_centre_free_affine(transform)
 
 
 def alignment_registration(
@@ -181,59 +320,8 @@ def alignment_registration(
     return aligned_image, transform
 
 
-def registration_command_iteration(method):
-    """
-    Utility function to print information during (rigid, similarity, translation, B-splines)
-    registration
-    """
-    print("{0:3} = {1:10.5f}".format(method.GetOptimizerIteration(), method.GetMetricValue()))
 
 
-def apply_transform(
-    input_image,
-    reference_image=None,
-    transform=None,
-    default_value=0,
-    interpolator=sitk.sitkNearestNeighbor,
-):
-    """
-    Transform a volume of structure with the given deformation field.
-
-    Args
-        input_image (SimpleITK.Image): The image, to which the transform is applied
-        reference_image (SimpleITK.Image): The image will be resampled into this reference space.
-        transform (SimpleITK.Transform): The transformation
-        default_value: Default (background) value. Defaults to 0.
-        interpolator (int, optional): The interpolation order.
-                                Available options:
-                                    - SimpleITK.sitkNearestNeighbor
-                                    - SimpleITK.sitkLinear
-                                    - SimpleITK.sitkBSpline
-                                Defaults to SimpleITK.sitkNearestNeighbor
-
-    Returns
-        (SimpleITK.Image): the transformed image
-
-    """
-    original_image_type = input_image.GetPixelID()
-
-    resampler = sitk.ResampleImageFilter()
-
-    if reference_image:
-        resampler.SetReferenceImage(reference_image)
-    else:
-        resampler.SetReferenceImage(input_image)
-
-    if transform:
-        resampler.SetTransform(transform)
-
-    resampler.SetDefaultPixelValue(default_value)
-    resampler.SetInterpolator(interpolator)
-
-    output_image = resampler.Execute(input_image)
-    output_image = sitk.Cast(output_image, original_image_type)
-
-    return output_image
 
 
 def linear_registration(
@@ -243,7 +331,7 @@ def linear_registration(
     moving_structure=None,
     reg_method="similarity",
     metric="mean_squares",
-    optimiser="gradient_descent",
+    optimizer="gradient_descent",
     shrink_factors=[8, 2, 1],
     smooth_sigmas=[4, 2, 0],
     sampling_rate=0.25,
@@ -255,7 +343,7 @@ def linear_registration(
     """
     Initial linear registration between two images.
     The images are not required to be in the same space.
-    There are several transforms available, with options for the metric and optimiser to be used.
+    There are several transforms available, with options for the metric and optimizer to be used.
     Note the default_value, which should be set to match the image modality.
 
     Args:
@@ -283,7 +371,7 @@ def linear_registration(
                                  - mattes_mi
                                  - joint_hist_mi
                                 Defaults to "mean_squares".
-        optimiser (str, optional): The optimiser algorithm used for image registration.
+        optimizer (str, optional): The optimizer algorithm used for image registration.
                                    Available options:
                                     - lbfgsb
                                       (limited-memory Broyden–Fletcher–Goldfarb–Shanno (bounded).)
@@ -392,7 +480,7 @@ def linear_registration(
             "or a custom sitk.CompositeTransform."
         )
 
-    if optimiser.lower() == "lbfgsb":
+    if optimizer.lower() == "lbfgsb":
         registration.SetOptimizerAsLBFGSB(
             gradientConvergenceTolerance=1e-5,
             numberOfIterations=number_of_iterations,
@@ -401,7 +489,7 @@ def linear_registration(
             costFunctionConvergenceFactor=1e7,
             trace=verbose,
         )
-    elif optimiser.lower() == "exhaustive":
+    elif optimizer.lower() == "exhaustive":
         """
         This isn't well implemented
         Needs some work to give options for sampling rates
@@ -409,11 +497,11 @@ def linear_registration(
         """
         samples = [10, 10, 10, 10, 10, 10]
         registration.SetOptimizerAsExhaustive(samples)
-    elif optimiser.lower() == "gradient_descent_line_search":
+    elif optimizer.lower() == "gradient_descent_line_search":
         registration.SetOptimizerAsGradientDescentLineSearch(
             learningRate=1.0, numberOfIterations=number_of_iterations
         )
-    elif optimiser.lower() == "gradient_descent":
+    elif optimizer.lower() == "gradient_descent":
         registration.SetOptimizerAsGradientDescent(
             learningRate=2.0, numberOfIterations=number_of_iterations
         )

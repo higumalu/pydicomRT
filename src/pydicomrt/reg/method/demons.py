@@ -1,139 +1,12 @@
+import logging
 from typing import Optional, Sequence, Tuple, Union, List
 import numpy as np
 import SimpleITK as sitk
+from .common import deformable_registration_command_iteration, smooth_and_resample
+
+logger = logging.getLogger(__name__)
 
 
-def smooth_and_resample(
-    image,
-    isotropic_voxel_size_mm=None,
-    shrink_factor=None,
-    smoothing_sigma=None,
-    interpolator=sitk.sitkLinear,
-):
-    """
-    Smooth (optional Gaussian) and resample an image to a lower resolution or
-    isotropic voxel size.
-
-    This function is typically used to build an image pyramid for multi-resolution
-    registration. It first applies Gaussian smoothing (if requested), then resamples
-    the image using either:
-      - a shrink factor (downsampling), or
-      - a target isotropic voxel size.
-
-    Parameters
-    ----------
-    image : sitk.Image
-        Input image to smooth and resample.
-    isotropic_voxel_size_mm : float, optional
-        Desired isotropic voxel size (mm). If provided, overrides `shrink_factor`.
-    shrink_factor : float or list of floats, optional
-        Downsampling factor(s). If scalar, applied equally to all dimensions.
-        If list/tuple, must match the number of image dimensions.
-        Mutually exclusive with `isotropic_voxel_size_mm`.
-    smoothing_sigma : float or list of floats, optional
-        Gaussian smoothing sigma(s), in physical units (mm). If scalar, same
-        sigma is applied in all dimensions; if sequence, must match the number
-        of dimensions.
-    interpolator : int, default = sitk.sitkLinear
-        Interpolator enum used by SimpleITK's Resample function.
-
-    Returns
-    -------
-    sitk.Image
-        Smoothed and resampled image.
-
-    Raises
-    ------
-    AttributeError
-        If both `isotropic_voxel_size_mm` and `shrink_factor` are specified.
-    """
-
-    # ---- Step 1. Optional Gaussian smoothing ----
-    if smoothing_sigma:
-        if hasattr(smoothing_sigma, "__iter__"):
-            # Variance = sigma^2 per dimension
-            smoothing_variance = [i * i for i in smoothing_sigma]
-            sigmas = list(smoothing_sigma)
-        else:
-            smoothing_variance = (smoothing_sigma ** 2,) * image.GetDimension()
-            sigmas = [smoothing_sigma] * image.GetDimension()
-
-        # Kernel width = ~8*sigma/spacing (in voxels, rounded)
-        # Convert sigma from mm to voxels: sigma_vox = sigma_mm / spacing
-        maximum_kernel_width = int(
-            max([8.0 * sigma / spacing for sigma, spacing in zip(sigmas, image.GetSpacing())])
-        )
-
-        # Apply smoothing in physical space
-        image = sitk.DiscreteGaussian(image, smoothing_variance, maximum_kernel_width)
-
-    # ---- Step 2. Retrieve current metadata ----
-    original_spacing = image.GetSpacing()
-    original_size = image.GetSize()
-
-    # ---- Step 3. Check for conflicting arguments ----
-    if shrink_factor and isotropic_voxel_size_mm:
-        raise AttributeError(
-            "Function must be called with either isotropic_voxel_size_mm or "
-            "shrink_factor, not both."
-        )
-
-    # ---- Step 4. Compute new size ----
-    if isotropic_voxel_size_mm:
-        # Target isotropic resolution → scale factor = target/original spacing
-        scale_factor = (
-            isotropic_voxel_size_mm * np.ones_like(image.GetSize()) / np.array(image.GetSpacing())
-        )
-        # Compute new size = old_size / scale_factor (rounded)
-        new_size = [int(sz / float(sf) + 0.5) for sz, sf in zip(original_size, scale_factor)]
-
-    elif shrink_factor:
-        if isinstance(shrink_factor, (list, tuple)):
-            # Per-dimension shrink factor
-            new_size = [int(sz / float(sf) + 0.5) for sz, sf in zip(original_size, shrink_factor)]
-        else:
-            # Same shrink factor in all dimensions
-            new_size = [int(sz / float(shrink_factor) + 0.5) for sz in original_size]
-
-    else:
-        # Neither shrink nor isotropic resampling → return unchanged
-        return image
-
-    # ---- Step 4.5. Validate new_size to avoid division by zero ----
-    # Ensure no dimension becomes less than 2 (which would cause division by zero in spacing calculation)
-    for i, size_n_i in enumerate(new_size):
-        if size_n_i < 1:
-            raise ValueError(
-                f"Computed new size for dimension {i} is {size_n_i}, which is less than 1. "
-                f"This may occur if shrink_factor is too large or isotropic_voxel_size_mm is too small."
-            )
-        if size_n_i == 1:
-            raise ValueError(
-                f"Computed new size for dimension {i} is 1, which would cause division by zero "
-                f"in spacing calculation. Please use a smaller shrink_factor or larger "
-                f"isotropic_voxel_size_mm to avoid this issue."
-            )
-
-    # ---- Step 5. Compute new spacing from new size ----
-    # Keep same physical extent → spacing = (extent / (new_size-1))
-    # Note: new_size is guaranteed to be >= 2 at this point, so no division by zero
-    new_spacing = [
-        ((size_o_i - 1) * spacing_o_i) / (size_n_i - 1)
-        for size_o_i, spacing_o_i, size_n_i in zip(original_size, original_spacing, new_size)
-    ]
-
-    # ---- Step 6. Resample with new size/spacing ----
-    return sitk.Resample(
-        image,
-        new_size,
-        sitk.Transform(),          # identity transform
-        interpolator,              # chosen interpolator
-        image.GetOrigin(),         # preserve origin
-        new_spacing,               # computed spacing
-        image.GetDirection(),      # preserve direction cosines
-        0.0,                       # default background value
-        image.GetPixelID(),        # preserve pixel type
-    )
 
 
 def multiscale_demons(
@@ -147,6 +20,8 @@ def multiscale_demons(
     smoothing_sigmas=None,
     iteration_staging=None,
     interp_order=sitk.sitkLinear,
+    default_value=None,
+    regularization_kernel_mm=None,
 ):
     """
     Perform deformable image registration using a multi-scale (pyramid) demons strategy.
@@ -189,6 +64,12 @@ def multiscale_demons(
         Number of iterations to run at each pyramid level.
     interp_order : int, default = sitk.sitkLinear
         Interpolator used for image resampling.
+    default_value : float, optional
+        Padding used when warping the moving image at each level. Inferred from raw
+        moving intensities when omitted.
+    regularization_kernel_mm : sequence of float, optional
+        Displacement smoothing widths in mm, converted to voxels at each pyramid level.
+        When omitted, use the filter's existing voxel widths.
 
     Returns
     -------
@@ -202,6 +83,8 @@ def multiscale_demons(
     - Pixel type of DVF is constrained to sitkVectorFloat64 for compatibility
       with Demons filters in SimpleITK.
     """
+    if default_value is None:
+        default_value = -1000.0 if np.min(sitk.GetArrayViewFromImage(moving_image)) <= -1000 else 0.0
     # Lists to hold multi-resolution fixed and moving images
     fixed_images = []
     moving_images = []
@@ -255,30 +138,27 @@ def multiscale_demons(
             # Create an empty displacement field image matching fixed_image size
             # Use generic constructor that works for any dimension
             size_tuple = fixed_image.GetSize()
-            initial_displacement_field = sitk.Image(
-                *size_tuple,
-                sitk.sitkVectorFloat64,
-            )
+            initial_displacement_field = sitk.Image(size_tuple, sitk.sitkVectorFloat64, fixed_image.GetDimension())
             # Copy metadata (origin, spacing, direction) from fixed_image
             initial_displacement_field.CopyInformation(fixed_image)
-    else:
-        # Resample given initial DVF to fixed image grid
-        initial_displacement_field = sitk.Resample(initial_displacement_field, fixed_image)
-
     # Initialize total deformation vector field (DVF) aligned to fixed image
-    dvf_total = sitk.Resample(initial_displacement_field, fixed_image)
+    dvf_total = sitk.Resample(sitk.Cast(initial_displacement_field, sitk.sitkVectorFloat64), fixed_image)
 
     # Multi-scale loop: process from coarsest → finest resolution
     for i in range(len(fixed_images)):
         f_image = fixed_images[i]
         m_image = moving_images[i]
+        if regularization_kernel_mm is not None:
+            registration_algorithm.SetStandardDeviations(
+                (np.asarray(regularization_kernel_mm) / np.asarray(f_image.GetSpacing())).tolist()
+            )
 
         # Resample DVF to current resolution
         dvf_total = sitk.Resample(dvf_total, f_image)
 
         # Convert DVF into a transform and warp the moving image
         tfm_total = sitk.DisplacementFieldTransform(sitk.Cast(dvf_total, sitk.sitkVectorFloat64))
-        m_image = sitk.Resample(m_image, tfm_total, interp_order)
+        m_image = sitk.Resample(m_image, f_image, tfm_total, interp_order, float(default_value))
 
         # Configure number of iterations at this scale
         iters = iteration_staging[i]
@@ -287,12 +167,15 @@ def multiscale_demons(
         # Run demons registration at current scale
         dvf_iter = registration_algorithm.Execute(f_image, m_image)
 
-        # Accumulate update into running DVF (compose transforms)
-        dvf_total = dvf_total + sitk.Resample(dvf_iter, tfm_total)
+        # Moving was warped through T; the refinement D therefore gives T(D(x)).
+        # u_total(x) = v(x) + u(x + v(x)), not u(x) + v(x + u(x)).
+        refinement = sitk.DisplacementFieldTransform(sitk.Cast(sitk.Image(dvf_iter), sitk.sitkVectorFloat64))
+        dvf_total = dvf_iter + sitk.Resample(dvf_total, f_image, refinement, sitk.sitkLinear)
 
         # Regularize/smooth the DVF
-        sigma = registration_algorithm.GetStandardDeviations()
-        dvf_total = sitk.SmoothingRecursiveGaussian(dvf_total, sigma)
+        sigma_mm = np.asarray(registration_algorithm.GetStandardDeviations()) * np.asarray(f_image.GetSpacing())
+        # The filter takes voxel sigmas; the standalone Gaussian takes physical mm.
+        dvf_total = sitk.SmoothingRecursiveGaussian(dvf_total, sigma_mm.tolist())
         dvf_total = sitk.Cast(dvf_total, sitk.sitkVectorFloat64)
 
     # Resample final DVF to fixed image grid
@@ -301,11 +184,6 @@ def multiscale_demons(
     return dvf_total
 
 
-def deformable_registration_command_iteration(method):
-    """
-    Utility function to print information during demons registration
-    """
-    print("{0:3} = {1:10.5f}".format(method.GetElapsedIterations(), method.GetMetric()))
 
 
 def demons_registration(
@@ -315,7 +193,7 @@ def demons_registration(
     iteration_staging: Sequence[int] = (10, 10, 10),
     isotropic_resample: bool = False,
     initial_displacement_field: Optional[sitk.Image] = None,
-    regularisation_kernel_mm: Union[float, Sequence[float]] = 1.5,
+    regularization_kernel_mm: Union[float, Sequence[float]] = 1.5,
     smoothing_sigma_factor: float = 1.0,
     smoothing_sigmas: Optional[Union[float, Sequence[float], bool]] = False,
     default_value: Optional[float] = None,
@@ -329,6 +207,8 @@ def demons_registration(
     The function registers `moving_image` to `fixed_image` by estimating a dense displacement
     field using a coarse-to-fine (image pyramid) schedule. It then applies the resulting
     displacement-field transform to resample the moving image into the fixed image space.
+    Inputs may have different grids; moving data are sampled onto the fixed pyramid grid
+    through the current transform at each level. This does not estimate a rigid alignment.
 
     Parameters
     ----------
@@ -347,7 +227,7 @@ def demons_registration(
     initial_displacement_field : Optional[sitk.Image], default = None
         Initial DVF (vector image). If provided, it overrides any `initial_transform` usage
         inside `multiscale_demons` and is resampled onto the fixed grid when needed.
-    regularisation_kernel_mm : float or Sequence[float], default = 1.0
+    regularization_kernel_mm : float or Sequence[float], default = 1.0
         Standard deviation(s) in millimeters used by demons for smoothing the update and DVF.
         Scalar broadcasts to all axes; sequence length must be 1 or image dimension.
     smoothing_sigma_factor : float, default = 1.0
@@ -356,7 +236,7 @@ def demons_registration(
     smoothing_sigmas : float or Sequence[float] or bool, default = False
         Per-level Gaussian sigmas (in physical units, mm) used for image smoothing
         prior to resampling at each pyramid level. This is separate from the demons
-        regularization kernel (`regularisation_kernel_mm`).
+        regularization kernel (`regularization_kernel_mm`).
         - False/None: derived from `resolution_staging` and `smoothing_sigma_factor`
         - float: same sigma for all levels
         - sequence: length must match number of levels
@@ -415,6 +295,8 @@ def demons_registration(
         raise ValueError("`fixed_image` and `moving_image` must have the same dimension.")
     if initial_displacement_field is not None and initial_displacement_field.GetDimension() != dim:
         raise ValueError("`initial_displacement_field` must have the same dimension as the images.")
+    if initial_displacement_field is not None and initial_displacement_field.GetNumberOfComponentsPerPixel() != dim:
+        raise ValueError("initial_displacement_field must have one component per spatial dimension")
 
     # ---- Prepare per-level smoothing sigmas (in physical units) ----
     num_levels = len(resolution_staging)
@@ -433,15 +315,17 @@ def demons_registration(
         raise ValueError("`smoothing_sigmas` must be False/None, a float, or a sequence of floats.")
 
     # ---- Convert regularisation sigma from mm → voxels for demons filter ----
-    if isinstance(regularisation_kernel_mm, (int, float)):
-        kernel_mm = np.full(dim, float(regularisation_kernel_mm), dtype=np.float64)
+    if isinstance(regularization_kernel_mm, (int, float)):
+        kernel_mm = np.full(dim, float(regularization_kernel_mm), dtype=np.float64)
     else:
-        ker = np.asarray(regularisation_kernel_mm, dtype=np.float64).ravel()
+        ker = np.asarray(regularization_kernel_mm, dtype=np.float64).ravel()
         if ker.size not in (1, dim):
             raise ValueError(
-                f"`regularisation_kernel_mm` must be a float or a sequence of length 1 or {dim}."
+                f"`regularization_kernel_mm` must be a float or a sequence of length 1 or {dim}."
             )
         kernel_mm = np.full(dim, float(ker[0]), dtype=np.float64) if ker.size == 1 else ker
+    if not np.isfinite(kernel_mm).all() or np.any(kernel_mm <= 0):
+        raise ValueError("regularization_kernel_mm must contain positive finite values")
 
     # Keep the original moving image pixel type to cast result back later
     moving_image_type = moving_image.GetPixelID()
@@ -492,6 +376,8 @@ def demons_registration(
             isotropic_resample=bool(isotropic_resample),
             initial_displacement_field=initial_displacement_field,
             interp_order=int(interp_order),
+            default_value=default_value,
+            regularization_kernel_mm=kernel_mm,
         )
     except NameError as e:
         # Provide a clearer error if helper function is missing

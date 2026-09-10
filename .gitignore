@@ -198,4 +198,10 @@ cython_debug/
 *.nii.gz
 *.nii
 tmp/
-example/
+# Sample imaging dropped next to the examples, not the example scripts themselves --
+# those are referenced from the README and are versioned. *.dcm / *.nii* above already
+# catch stray DICOM anywhere in the tree.
+example/data/
+
+# Local validation data (patient imaging - never commit)
+testdata/

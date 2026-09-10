@@ -12,6 +12,21 @@ from pydicom.datadict import tag_for_keyword
 class ValidationError(Exception):
     pass
 
+
+def build_check_result(errors: List[str]) -> Dict[str, object]:
+    """
+    Wrap a list of IOD problems in the result shape every ``check_*_iod`` returns.
+
+    Centralised so the four modality checkers cannot drift into reporting differently.
+
+    Returns
+    -------
+    dict
+        ``{"result": bool, "content": list[str]}`` -- ``result`` is True when clean.
+    """
+    errors = list(errors)
+    return {"result": not errors, "content": errors}
+
 def resolve_tag(key):
     if isinstance(key, str) and not key.lower().startswith("0x"):
         tag = tag_for_keyword(key)
@@ -27,31 +42,57 @@ def check_iod(
     path: str = ""
     ) -> List[str]:
     """
-    Check if a DICOM dataset conforms to a given IOD configuration.
-    :param ds: The DICOM dataset to check.
-    :param config_map: The IOD configuration to check against.
-        {
-        "tag_name": {
-            "type": type,
-            "validator": ["validator_name_1", "validator_name_2"],
-            "submap": {
-                "tag_name": {
-                    "type": type,
-                    "validator": ["validator_name_1", "validator_name_2"],
+    Check a DICOM dataset against an IOD description.
+
+    The engine behind every ``check_*_iod`` function. Call those instead unless you are
+    describing a new object type; this one takes the IOD as data so a new modality needs
+    an ``iod.py`` rather than new validation code.
+
+    Parameters
+    ----------
+    ds : Dataset
+        The dataset to check. Nested sequences are recursed into via ``submap``.
+    config_map : dict
+        Keyword to requirement, nestable::
+
+            {
+                "PatientID":     {},
+                "ROIContourSequence": {
+                    "min_items": 1,
                     "submap": {
-                        ...
-                    }
-                }
+                        "ReferencedROINumber": {"nonempty": True},
+                    },
+                },
+                "DoseSummationType": {"nonempty": True, "validator": ["dose_summation"]},
             }
-        }
-    :param validators: A dictionary of custom validators.
-        {
-        "validator_name_1": validator_function_1,
-        "validator_name_2": validator_function_2,
-        ...
-        }
-    :param path: The path to the dataset in the IOD configuration.
-    :return: A list of errors.
+
+        Elements are required unless ``optional=True``. ``nonempty=True`` rejects empty
+        values; ``min_items`` and ``max_items`` constrain sequence cardinality. ``type``
+        is a Python value class, not the DICOM requirement number. ``validator`` names
+        entries in ``validators``. ``submap`` describes sequence items.
+    validators : dict of str to callable, optional
+        Named checks beyond presence, as ``{name: func}``. Each is called with the element
+        value and raises ``ValidationError`` on failure. Used
+        for the conditional (Type 1C) requirements presence alone cannot express.
+    path : str, optional
+        Prefix used when reporting nested elements; set by the recursion. Leave it alone
+        at the top level, where it produces messages ending "in root".
+
+    Returns
+    -------
+    list of str
+        One message per problem, empty when the dataset conforms. Pass it through
+        :func:`build_check_result` to get the ``{"result", "content"}`` shape the public
+        checkers return.
+
+    See Also
+    --------
+    build_check_result : Wrap the returned list in the public result shape.
+
+    Notes
+    -----
+    This checks that required elements are *present*, not that their values are correct.
+    A conformant object can still describe the wrong geometry.
     """
     # print(validators)
     errors = []
@@ -68,6 +109,13 @@ def check_iod(
                 continue
 
         val = elem.value
+        if cfg.get("nonempty") and (val is None or (hasattr(val, "__len__") and len(val) == 0)):
+            errors.append(f"Empty {key} in {loc}")
+        if elem.VR == "SQ":
+            if len(val) < cfg.get("min_items", 0):
+                errors.append(f"{key} in {loc} requires at least {cfg['min_items']} item(s)")
+            if "max_items" in cfg and len(val) > cfg["max_items"]:
+                errors.append(f"{key} in {loc} permits at most {cfg['max_items']} item(s)")
 
         # Check type
         expected_type = cfg.get("type")

@@ -4,11 +4,59 @@ Registration preprocessing module.
 Provides image preprocessing utilities such as window clipping and normalization.
 """
 
+import logging
+from itertools import product
 from typing import Optional, Dict, List, Tuple, Union
 import numpy as np
 import SimpleITK as sitk
 
-from pydicomrt.utils.sitk_transform import resample_to_reference_image
+logger = logging.getLogger(__name__)
+
+#: Padding value used for CT-like images when resampling outside the source extent.
+CT_AIR_HU = -1000.0
+
+
+def infer_default_pixel_value(
+    image: sitk.Image,
+    default_value: Optional[float] = None
+) -> float:
+    """
+    Resolve the padding value to use when resampling outside an image's extent.
+
+    An explicit ``default_value`` always wins. Otherwise the value is inferred from the
+    image intensities: an image reaching down to air (``<= -1000``) is treated as CT and
+    padded with :data:`CT_AIR_HU`, anything else is padded with ``0``.
+
+    Note that the inference only works on raw intensities. Once an image has been window
+    clipped its minimum no longer reaches ``-1000``, so pass ``default_value`` explicitly
+    for preprocessed or non-CT (MR/PET) images instead of relying on the inference.
+
+    Parameters
+    ----------
+    image : sitk.Image
+        Image whose intensity range is inspected.
+    default_value : Optional[float], default = None
+        Explicit padding value. Returned unchanged when not None.
+
+    Returns
+    -------
+    float
+        Padding value to hand to SimpleITK resampling.
+    """
+    if default_value is not None:
+        return float(default_value)
+
+    if image.GetNumberOfComponentsPerPixel() != 1:
+        # Vector images (e.g. displacement fields) have no meaningful air value.
+        return 0.0
+
+    try:
+        arr_min = float(np.min(sitk.GetArrayViewFromImage(image)))
+    except RuntimeError:  # pragma: no cover - unsupported pixel type
+        logger.debug("Could not read intensities to infer default pixel value; using 0.0")
+        return 0.0
+
+    return CT_AIR_HU if arr_min <= CT_AIR_HU else 0.0
 
 
 def window_clip(
@@ -60,14 +108,9 @@ def preprocess_image(
 
     Examples
     --------
-    >>> import SimpleITK as sitk
-    >>> from pydicomrt.reg.pipeline.preprocessing import preprocess_image
-    >>>
-    >>> # Window clipping
-    >>> processed = preprocess_image(
+    >>> processed = preprocess_image(                               # doctest: +SKIP
     ...     image=ct_image,
-    ...     preprocess_config={'window_clip': [-10, 500]}
-    ... )
+    ...     preprocess_config={'window_clip': [-10, 500]})
     """
     if preprocess_config is None:
         return image
@@ -202,20 +245,25 @@ def create_reference_image_from_extent(
     sitk.Image
         Created reference image.
     """
-    # Compute physical size
-    size_physical = max_corner - min_corner
-    
-    # Compute pixel size
-    spacing_array = np.array(spacing)
-    size_pixels = np.ceil(size_physical / spacing_array).astype(int)
-    size_pixels = np.maximum(size_pixels, [1, 1, 1])
-
-    # Create image
+    # Bounds describe voxel centres in patient coordinates. Project all eight
+    # corners into the requested image axes before choosing origin and size.
+    lower, upper = np.asarray(min_corner, float), np.asarray(max_corner, float)
+    if (lower.shape != (3,) or upper.shape != (3,) or
+            not np.isfinite(lower).all() or not np.isfinite(upper).all() or np.any(upper < lower)):
+        raise ValueError("extent must be ordered 3D bounds")
+    spacing_array = np.asarray(spacing, float)
+    if spacing_array.shape != (3,) or not np.isfinite(spacing_array).all() or np.any(spacing_array <= 0):
+        raise ValueError("spacing must contain three positive finite values")
+    axes = np.asarray(direction, float).reshape(3, 3)
+    corners = np.array(list(product(*zip(lower, upper))))
+    local = np.linalg.solve(axes, corners.T).T
+    start, end = local.min(axis=0), local.max(axis=0)
+    size_pixels = np.ceil((end - start) / spacing_array - 1e-9).astype(int) + 1
     ref_image = sitk.Image(size_pixels.tolist(), pixel_id)
-    ref_image.SetOrigin(min_corner)
+    ref_image.SetOrigin((axes @ start).tolist())
     ref_image.SetSpacing(spacing)
     ref_image.SetDirection(direction)
-    
+
     return ref_image
 
 
@@ -317,34 +365,16 @@ def crop_image_to_extent(
     Returns
     -------
     sitk.Image
-        Cropped image.
+        Image on a patient-axis-aligned grid covering the requested voxel-centre box.
+        Oblique inputs are resampled; spacing is retained and direction becomes identity.
     """
-    # Auto-detect default value
-    if default_value is None:
-        default_value = 0.0
-        try:
-            arr_min = float(np.min(sitk.GetArrayViewFromImage(image)))
-            if arr_min <= -1000.0:
-                default_value = -1000.0
-        except Exception:
-            pass
+    default_value = infer_default_pixel_value(image, default_value)
 
-    # Compute size of crop extent
-    size_physical = max_corner - min_corner
-
-    # Get image attributes
-    spacing = np.array(image.GetSpacing())
-    direction = np.array(image.GetDirection()).reshape(image.GetDimension(), image.GetDimension())
-
-    # Compute cropped image size in pixels (physical size -> pixel size)
-    size_pixels = np.ceil(size_physical / spacing).astype(int)
-    size_pixels = np.maximum(size_pixels, [1, 1, 1])
-
-    # Create new image with crop extent spatial info (origin = min_corner)
-    cropped_image = sitk.Image(size_pixels.tolist(), image.GetPixelID())
-    cropped_image.SetOrigin(min_corner)
-    cropped_image.SetSpacing(spacing)
-    cropped_image.SetDirection(image.GetDirection())
+    # A patient-space box is axis aligned. Use a patient-axis output grid for
+    # oblique inputs rather than assigning their direction to the box minimum.
+    cropped_image = create_reference_image_from_extent(
+        min_corner, max_corner, image.GetSpacing(), tuple(np.eye(3).ravel()), image.GetPixelID()
+    )
 
     # Resample original image onto crop extent
     resampler = sitk.ResampleImageFilter()
@@ -393,6 +423,10 @@ def align_image_extents(
     initial_transform = None
     current_moving_image = moving_image
 
+    # Resolve the padding values once, before any resampling changes the intensity range
+    moving_default_value = infer_default_pixel_value(moving_image, default_value)
+    fixed_default_value = infer_default_pixel_value(fixed_image, default_value)
+
     # If allowed, apply initial rigid transform before computing intersection
     if use_initial_rigid:
         initial_transform = get_initial_rigid_transform(fixed_image, current_moving_image)
@@ -401,20 +435,7 @@ def align_image_extents(
         resampler = sitk.ResampleImageFilter()
         resampler.SetReferenceImage(fixed_image)
         resampler.SetInterpolator(sitk.sitkLinear)
-
-        # Auto-detect default value
-        if default_value is None:
-            default_val = 0.0
-            try:
-                arr_min = float(np.min(sitk.GetArrayViewFromImage(current_moving_image)))
-                if arr_min <= -1000.0:
-                    default_val = -1000.0
-            except Exception:
-                pass
-        else:
-            default_val = default_value
-        
-        resampler.SetDefaultPixelValue(default_val)
+        resampler.SetDefaultPixelValue(moving_default_value)
         resampler.SetTransform(initial_transform)
 
         current_moving_image = resampler.Execute(current_moving_image)
@@ -432,15 +453,11 @@ def align_image_extents(
             "Check that the images' spatial extents overlap."
         )
 
-    # Crop both images to intersection; use fixed_image spacing for consistency
-    fixed_spacing = fixed_image.GetSpacing()
-    fixed_aligned = crop_image_to_extent(fixed_image, min_corner, max_corner, default_value)
-    moving_aligned = crop_image_to_extent(current_moving_image, min_corner, max_corner, default_value)
-
-    # Ensure moving_aligned has same spacing and spatial attributes as fixed_aligned
-    if (moving_aligned.GetSpacing() != fixed_spacing or 
-        moving_aligned.GetSize() != fixed_aligned.GetSize() or
-        moving_aligned.GetOrigin() != fixed_aligned.GetOrigin()):
-        moving_aligned = resample_to_reference_image(fixed_aligned, moving_aligned)
+    fixed_aligned = crop_image_to_extent(fixed_image, min_corner, max_corner, fixed_default_value)
+    # Sample the original moving image straight onto that grid, once, preserving its type.
+    moving_aligned = sitk.Resample(
+        current_moving_image, fixed_aligned, sitk.Transform(), sitk.sitkLinear,
+        moving_default_value, current_moving_image.GetPixelID()
+    )
 
     return fixed_aligned, moving_aligned, initial_transform

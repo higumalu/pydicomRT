@@ -6,8 +6,12 @@ Python-Version: 3.10.0
 Coding: UTF-8
 '''
 
+import logging
 import numpy as np
 import cv2
+from pydicomrt.utils.coordinate_transform import apply_transformation_to_3d_points
+
+logger = logging.getLogger(__name__)
 
 
 def self_round(x: float, decimal: int) -> float:
@@ -105,9 +109,6 @@ def calc_obb(points: np.ndarray, normal_vector: np.ndarray) -> np.ndarray:
     return obb_corners_original
 
 
-def apply_transformation_to_3d_points(points: np.ndarray, transformation_matrix: np.ndarray):
-    vec = np.concatenate((points, np.ones((points.shape[0], 1))), axis=1)
-    return vec.dot(transformation_matrix.T)[:, :3]
 
 
 def round_3d_points(points):
@@ -134,9 +135,48 @@ def get_series_z_spacing(series_ds_list):
 
 
 def calc_image_series_affine_mapping(series_ds_list):
+    """
+    Derive the patient-to-pixel affine and volume shape from an image series.
+
+    The companion call to :func:`rtstruct_to_masks`, which needs to know the grid the
+    contours should be rasterised onto. That grid comes from the *images*, not from the
+    RTSTRUCT: an RTSTRUCT stores points in patient coordinates and carries no grid of its
+    own.
+
+    Parameters
+    ----------
+    series_ds_list : list of Dataset
+        Slices sorted along the slice normal. Sorting matters -- the origin is taken from
+        ``series_ds_list[0]``, so an unsorted series produces masks flipped in z.
+
+    Returns
+    -------
+    affine_mapping : np.ndarray
+        4x4 mapping patient mm to pixel indices.
+    mask_volume_shape : tuple of int
+        ``(slice, row, column)`` -- number of slices, then Rows, then Columns.
+
+    Raises
+    ------
+    Exception
+        If ImageOrientationPatient is not two orthogonal unit vectors.
+
+    See Also
+    --------
+    rtstruct_to_masks : Consumes both return values.
+    calc_rs_affine_mapping : The fallback when the image series is unavailable.
+
+    Examples
+    --------
+    >>> affine, shape = calc_image_series_affine_mapping(series)     # doctest: +SKIP
+    >>> masks = rtstruct_to_masks(rs_ds, affine, shape)              # doctest: +SKIP
+    """
     first_slice = series_ds_list[0]
     origin = np.array(first_slice.ImagePositionPatient)
-    x_spacing, y_spacing = first_slice.PixelSpacing
+    # DICOM PixelSpacing is [row spacing, column spacing]. v_x travels along a row (the
+    # column index advancing), so it pairs with the column spacing, and v_y with the row one.
+    row_spacing, column_spacing = first_slice.PixelSpacing
+    x_spacing, y_spacing = column_spacing, row_spacing
     z_spacing = get_series_z_spacing(series_ds_list)
     v_x = np.array(first_slice.ImageOrientationPatient[:3])
     v_y = np.array(first_slice.ImageOrientationPatient[3:])
@@ -156,6 +196,40 @@ def calc_image_series_affine_mapping(series_ds_list):
 
 
 def calc_rs_affine_mapping(rs_ds):
+    """
+    Infer an affine and volume shape from the contours themselves.
+
+    A fallback for when the referenced image series is not available. The grid is
+    reconstructed from the contour points: the in-plane axes come from an oriented
+    bounding box, the slice axis from the contour normals, and the extent from the point
+    cloud's bounds.
+
+    Prefer :func:`calc_image_series_affine_mapping` whenever you have the images. The
+    inferred grid is *not* the acquisition grid -- it is bounded by the contours, so it
+    is generally smaller, differently placed, and differently sampled. Masks produced
+    through it will not line up voxel-for-voxel with the CT.
+
+    Parameters
+    ----------
+    rs_ds : Dataset
+        RT Structure Set with a populated ROIContourSequence.
+
+    Returns
+    -------
+    affine_mapping : np.ndarray
+        4x4 mapping patient mm to indices of the inferred grid.
+    mask_volume_shape : tuple of int
+        ``(slice, row, column)`` of the inferred grid.
+
+    See Also
+    --------
+    calc_image_series_affine_mapping : The accurate path, when the images are on hand.
+
+    Notes
+    -----
+    Contours with fewer than three points contribute no normal and are skipped when
+    estimating orientation.
+    """
     if hasattr(rs_ds, 'ROIContourSequence'):
         all_slice_ctr = {}
         all_ctr = []
@@ -188,7 +262,7 @@ def calc_rs_affine_mapping(rs_ds):
         # print(all_ctr)
         ##### calc orented bounding box #####
         obb = calc_obb(all_ctr, normal)
-        print(obb, obb.shape)
+        logger.debug("Oriented bounding box %s shape %s", obb, obb.shape)
         origin = obb[0]
         # xyz = obb[7]
         v_z = obb[1] - obb[0]
@@ -259,19 +333,62 @@ def inverse_affine_mapping(matrix):
     return inverse_matrix
 
 
-def rtstruct_to_mask_dict(rs_ds, affine_mapping, mask_volume_shape, roi_list=["all"], packbits=False):
+def rtstruct_to_masks(rs_ds, affine_mapping, mask_volume_shape, roi_list=["all"], packbits=False):
     """
-    Convert a DICOM RT Structure Set to a dictionary of masks.
+    Rasterise an RT Structure Set into 3D binary masks.
 
-    Parameters:
-    - rs_ds: DICOM RT Structure Set dataset.
-    - affine_mapping: Affine mapping matrix.
-    - mask_volume_shape: Shape of the mask volume.
-    - roi_list: List of ROI names to include in the dictionary. If "all", include all ROIs.
-    - packbits: Whether to pack the masks using packbits.
+    Each contour is transformed into pixel indices and filled with ``cv2.fillPoly``,
+    slice by slice. Overlapping contours on the same slice cancel, which is how nested
+    contours become holes -- a ring drawn inside another ring on the same slice reads as
+    exterior, matching the even-odd rule TPSs use.
 
-    Returns:
-    - roi_dict: Dictionary of masks, where keys are ROI names and values are masks.
+    Parameters
+    ----------
+    rs_ds : Dataset
+        RT Structure Set.
+    affine_mapping : np.ndarray
+        4x4 patient-to-pixel affine, from :func:`calc_image_series_affine_mapping`.
+    mask_volume_shape : tuple of int
+        ``(slice, row, column)``, from the same call.
+    roi_list : list of str, optional
+        ROI names to rasterise. The default ``["all"]`` does every ROI. Filtering here is
+        much cheaper than rasterising everything and discarding.
+    packbits : bool, optional
+        Pack each mask along the last axis with ``np.packbits``, 8x smaller in memory.
+        Unpack with ``np.unpackbits(mask, axis=-1)`` before use. Default False.
+
+    Returns
+    -------
+    dict
+        Keyed by ROI *name*, not number::
+
+            {"CTV": {"mask_volume": np.ndarray,      # (slice, row, column), 0 or 1
+                     "affine_mapping": np.ndarray}}  # the affine passed in
+
+        An ROI declared without contours yields an empty inner dict, so read
+        ``masks[name]["mask_volume"]`` defensively when the source is unknown.
+
+    See Also
+    --------
+    calc_image_series_affine_mapping : Produces both geometry arguments.
+    RTStructBuilder.add_roi : The reverse direction, mask to contours.
+
+    Notes
+    -----
+    ROI names are not required to be unique in DICOM. Two ROIs sharing a name collapse to
+    one entry, the later overwriting the earlier. Use :func:`get_roi_names` to detect this
+    before trusting the mapping.
+
+    Each contour is assigned to the slice of its **first** point. Contours that are not
+    planar, or that sit exactly between two slices, land on one slice rather than being
+    split.
+
+    Examples
+    --------
+    >>> affine, shape = calc_image_series_affine_mapping(series)   # doctest: +SKIP
+    >>> masks = rtstruct_to_masks(rs_ds, affine, shape, roi_list=["CTV"])  # doctest: +SKIP
+    >>> masks["CTV"]["mask_volume"].sum()                          # doctest: +SKIP
+    18422
     """
     roi_number_name_map = get_roi_number_name_map(rs_ds)
     if hasattr(rs_ds, 'ROIContourSequence'):
@@ -329,7 +446,7 @@ def rtstruct_to_mask_dict(rs_ds, affine_mapping, mask_volume_shape, roi_list=["a
 
     # # af_map, mask_shape = calc_image_series_affine_mapping(ds_list)
     # af_map, mask_shape = calc_rs_affine_mapping(rs_ds)
-    # roi_dict = rtstruct_to_mask_dict(rs_ds, af_map, mask_shape)
+    # roi_dict = rtstruct_to_masks(rs_ds, af_map, mask_shape)
     # inv_af_map = inverse_affine_mapping(af_map)
     # print(af_map, inv_af_map)
 

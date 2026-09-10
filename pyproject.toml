@@ -1,19 +1,28 @@
 [project]
 name = "pydicomrt"
-version = "0.8.0"
+version = "0.9.0"
 description = "DICOM RT Structure and Registration"
 readme = "README.md"
 authors = [
     { name = "Higumalu", email = "higuma.lu@gmail.com" }
 ]
-requires-python = ">=3.8"
+# ct/builder.py uses structural pattern matching (`match`), which needs 3.10.
+requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = [
-    "pydicom>=2.0.0",
+    # 3.0 is a real floor, not a preference: the builders rely on save_as() taking the
+    # encoding from file_meta, where pydicom 2 required the is_little_endian /
+    # is_implicit_VR attributes that pydicom 4 removes.
+    "pydicom>=3.0.0",
     "numpy>=1.26.4",
     "opencv-python>=4.10.0",
     "scipy>=1.10.3",
     "simpleitk>=2.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
 ]
 
 [project.scripts]
@@ -22,3 +31,16 @@ pydicomrt = "pydicomrt:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pydicomrt"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+python_files = ["test_*.py", "*_test.py"]
+# Real-data tests run full registrations on clinical volumes and take minutes; they are
+# excluded by default. Run them with `pytest -m slow`.
+addopts = "-m 'not slow'"
+markers = [
+    "slow: full-size registration against real clinical data (opt in with -m slow)",
+]
