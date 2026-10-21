@@ -205,3 +205,6 @@ example/data/
 
 # Local validation data (patient imaging - never commit)
 testdata/
+
+# Internal research notes and scratch scripts - not part of the published library
+internal/
