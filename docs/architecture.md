@@ -98,7 +98,7 @@ Three distinct concerns, deliberately separated:
 
 | Layer | What it does | Coordinate convention |
 |---|---|---|
-| `reg/method/` | Runs SimpleITK registration algorithms | returns *fixed → moving* |
+| `reg/method/` | Runs SimpleITK registration algorithms; demons optionally on PyTorch (`_demons_torch.py`) | returns *fixed → moving* |
 | `reg/pipeline/` | Sequences stages, preprocessing, composition | same |
 | `reg/builder.py`, `reg/parser.py` | Spatial REG serialisation | *moving → fixed* |
 | `reg/builder.py`, `reg/parser.py` | Deformable REG serialisation | *fixed → moving* |

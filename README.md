@@ -33,6 +33,17 @@ pip install -e ".[dev]"
 Python ≥ 3.10, with `pydicom`, `numpy`, `SimpleITK`, `opencv-python`, `scipy`. The library
 is written against pydicom 3.
 
+GPU-accelerated demons is an optional extra, left out by default because PyTorch is a
+multi-gigabyte install:
+
+```bash
+pip install "pydicomrt[gpu]"
+```
+
+Then `demons_registration(..., backend="torch")` — about ten times faster than 24 CPU threads
+on a 22 M-voxel CT, with the same result. Nothing imports torch unless you ask for that
+backend. See [the user guide](docs/user-guide.md#demons-on-a-gpu).
+
 ---
 
 ## What you can do with it

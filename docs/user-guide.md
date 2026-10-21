@@ -34,6 +34,17 @@ Python ≥ 3.10 and **pydicom ≥ 3.0**. Pydicom 3 is a hard requirement, not a 
 builders take their encoding from the transfer syntax in `file_meta`, where pydicom 2
 required the `is_little_endian` / `is_implicit_VR` attributes that pydicom 4 removes.
 
+GPU-accelerated demons registration is an optional extra. PyTorch is a multi-gigabyte
+install, so it is left out by default and nothing imports it unless you ask for
+`backend="torch"`:
+
+```bash
+pip install "pydicomrt[gpu]"
+```
+
+If pip's default PyTorch wheel is CPU-only on your platform, install a CUDA build of PyTorch
+first (see pytorch.org); the extra only adds `torch` as a requirement.
+
 Saving uses the pydicom 3 spelling throughout:
 
 ```python
@@ -408,7 +419,7 @@ CT is a single-frame IOD, so `check_ct_iod` takes one slice at a time.
 **Prefer demons for deformable work.** On a synthetic phantom recovering a 2.11 mm
 deformation, demons scores 0.80 mm in 0.4 s against B-spline's 0.82 mm in 17 s. Reach for
 B-spline when you specifically need a parametric transform — control points you can store or
-manipulate — rather than a displacement field.
+manipulate — rather than a displacement field. Demons can also run on a GPU; see below.
 
 ### Rigid
 
@@ -422,6 +433,53 @@ Registration is only bit-reproducible single-threaded — ITK reduces the metric
 completion order, and on that real pair the thread count moved the answer by more than
 15 mm. Call `sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(1)` when you need
 determinism.
+
+### Demons on a GPU
+
+`backend="torch"` runs the same multiscale demons on PyTorch, on a GPU when one is available.
+It needs the `[gpu]` extra (see [Install](#install)) and returns the same three objects:
+
+```python
+registered, transform, field = demons_registration(
+    fixed_image, moving_rigid, backend="torch"       # device="cuda:1" picks a card
+)
+
+# or through the pipeline
+registration_pipeline(fixed_image, moving_image,
+                      deformable_kwargs={"backend": "torch"})
+```
+
+It is a port of the ITK filter, not a reimplementation of the idea — boundary handling,
+smoothing kernels and the early stop follow the ITK sources — and the tests hold it to the
+SimpleITK backend on anisotropic, rotated and mismatched grids, where the two agree to
+thousandths of a millimetre. On a real 418 × 417 × 126 planning CT (22 M voxels; RTX 5090,
+24-core CPU) with default settings:
+
+| backend | time |
+|---|---|
+| `"simpleitk"`, one thread (the `ncores` default) | ~63 s |
+| `"simpleitk"`, `ncores=24` | ~8 s |
+| `"torch"`, CUDA | ~0.7 s |
+
+Both scale linearly with iterations, so the ratio holds as you raise them.
+
+- **Memory** follows the finest pyramid level, at roughly 180 bytes per voxel — about 4 GB
+  for that 22 M-voxel CT. A 1024 × 1024 × 200 volume would need ~39 GB at full resolution;
+  with `isotropic_resample=True, resolution_staging=(8, 4, 1.5)` it ran in 5.2 GB and 3.7 s
+  (36.7 s on 24 threads) at the same accuracy, and the field still comes back on the fixed
+  grid. Running out raises `torch.OutOfMemoryError` with an estimate.
+- **Spend extra iterations at the finest level.** On known synthetic deformations of a real
+  CT, raising every level's count made the result worse — 1.15 mm at the default
+  `(10, 10, 10)`, 4.45 mm at `(100, 100, 100)` — while raising only the last improved it:
+  0.55 mm at `(10, 10, 100)`. That holds for both backends; the GPU just makes the long
+  schedules affordable.
+- **Image edges are unstable on either backend.** Where anatomy is cut off by the volume
+  edge, demons is chaotic: perturbing the input by a thousandth of a HU moves the SimpleITK
+  result there by millimetres. Expect the two backends to differ there by as much; inside the
+  volume they agree.
+- Repeated runs on one device give identical results. The torch backend is 3D only,
+  interpolates linearly, and ignores `ncores` and `verbose`. With no CUDA device it runs on
+  the CPU and logs a warning.
 
 ### B-spline
 
@@ -519,6 +577,8 @@ One case is not a validation. Check the residual against your own tolerance.
 | `optimizer='LBFGSB' cannot be combined with grid_scale_factors` | Pass `grid_scale_factors=None` |
 | Result differs between runs | ITK reduces the metric in thread completion order. Pin to one thread |
 | Registration returns something worse than doing nothing | If using `optimizer="gradient_descent"` on rigid, switch to the default |
+| `ImportError: backend='torch' needs PyTorch` | `pip install "pydicomrt[gpu]"` |
+| `torch.OutOfMemoryError` from `backend="torch"` | The finest pyramid level is too big for the card. Coarsen it with `isotropic_resample=True, resolution_staging=(8, 4, 1.5)` |
 
 ### Output looks shifted or stretched
 

@@ -31,6 +31,16 @@ pip install -e ".[dev]"
 需要 Python ≥ 3.10，以及 `pydicom`、`numpy`、`SimpleITK`、`opencv-python`、`scipy`。
 本函式庫是針對 pydicom 3 撰寫的。
 
+GPU 加速的 demons 是選用的額外套件。PyTorch 安裝動輒數 GB，所以預設不安裝：
+
+```bash
+pip install "pydicomrt[gpu]"
+```
+
+安裝後使用 `demons_registration(..., backend="torch")`：在 2200 萬 voxel 的 CT 上約比 24 個
+CPU 執行緒快十倍，結果相同。除非指定這個 backend，否則任何地方都不會 import torch。
+詳見[使用指南](docs/user-guide_zh.md#在-gpu-上跑-demons)。
+
 ---
 
 ## 能做什麼

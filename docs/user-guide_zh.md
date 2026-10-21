@@ -34,6 +34,16 @@ pip install pydicomrt
 `file_meta` 的 transfer syntax 取得編碼方式，而 pydicom 2 需要的
 `is_little_endian` / `is_implicit_VR` 屬性已被 pydicom 4 移除。
 
+GPU 加速的 demons 註冊是選用的額外套件。PyTorch 安裝動輒數 GB，所以預設不安裝，而且除非
+指定 `backend="torch"`，否則任何地方都不會 import 它：
+
+```bash
+pip install "pydicomrt[gpu]"
+```
+
+若 pip 預設的 PyTorch wheel 在你的平台上只有 CPU 版，請先自行安裝 CUDA 版的 PyTorch（見
+pytorch.org）；這個 extra 只是把 `torch` 加進需求。
+
 存檔一律使用 pydicom 3 的寫法：
 
 ```python
@@ -390,7 +400,7 @@ CT 是 single-frame IOD，所以 `check_ct_iod` 一次檢查一張切片。
 
 **可變形註冊請優先用 demons。** 在還原 2.11 mm 形變的合成假體上，demons 為 0.80 mm／0.4 秒，
 B-spline 為 0.82 mm／17 秒。當你確實需要參數化轉換 —— 可儲存、可操作的控制點 —— 而不是位移
-場時，才選 B-spline。
+場時，才選 B-spline。demons 也可以在 GPU 上跑，見下文。
 
 ### 剛體
 
@@ -402,6 +412,48 @@ B-spline 為 0.82 mm／17 秒。當你確實需要參數化轉換 —— 可儲�
 註冊只有在單執行緒下才逐位元可重現 —— ITK 依執行緒完成順序歸約 metric，在那組真實資料上，
 執行緒數會讓答案差超過 15 mm。需要決定性結果時請呼叫
 `sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(1)`。
+
+### 在 GPU 上跑 demons
+
+`backend="torch"` 用 PyTorch 跑同一個多解析度 demons，有 GPU 時就用 GPU。需要安裝 `[gpu]`
+extra（見[安裝](#安裝)），回傳的三個物件和原本相同：
+
+```python
+registered, transform, field = demons_registration(
+    fixed_image, moving_rigid, backend="torch"       # device="cuda:1" 可指定顯卡
+)
+
+# 或透過 pipeline
+registration_pipeline(fixed_image, moving_image,
+                      deformable_kwargs={"backend": "torch"})
+```
+
+它是 ITK filter 的移植，而不是照概念重寫 —— 邊界處理、平滑 kernel 和提前停止都依照 ITK
+原始碼 —— 測試會在非等向、旋轉、moving 在不同格點等情況下和 SimpleITK backend 比對，兩者
+差距在千分之一毫米等級。在一組真實的 418 × 417 × 126 定位 CT（2200 萬 voxel；RTX 5090、
+24 核 CPU）上，使用預設參數：
+
+| backend | 時間 |
+|---|---|
+| `"simpleitk"`，單執行緒（`ncores` 預設值） | 約 63 秒 |
+| `"simpleitk"`，`ncores=24` | 約 8 秒 |
+| `"torch"`，CUDA | 約 0.7 秒 |
+
+兩者的時間都隨迭代次數線性增加，所以迭代調高後倍數不變。
+
+- **記憶體**取決於金字塔最細一層，每個 voxel 約 180 bytes —— 那組 2200 萬 voxel 的 CT 約
+  4 GB。1024 × 1024 × 200 的影像在全解析度下需要約 39 GB；改用
+  `isotropic_resample=True, resolution_staging=(8, 4, 1.5)` 後只用 5.2 GB、3.7 秒（24 執行緒
+  要 36.7 秒），準確度相同，回傳的形變場仍在 fixed 格點上。記憶體不足時會丟出附帶預估值的
+  `torch.OutOfMemoryError`。
+- **多出來的迭代要加在最細一層。** 在真實 CT 加上已知合成形變的測試裡，每一層都加會變差 ——
+  預設 `(10, 10, 10)` 是 1.15 mm，`(100, 100, 100)` 是 4.45 mm —— 只加最後一層則變好：
+  `(10, 10, 100)` 是 0.55 mm。兩個 backend 都是如此，GPU 只是讓長排程變得負擔得起。
+- **影像邊緣在兩個 backend 上都不穩定。** 解剖被影像邊界截斷的地方，demons 是混沌的：輸入
+  只要擾動千分之一 HU，SimpleITK 在那裡的結果就會移動數毫米。兩個 backend 在那裡的差異也是
+  這個量級；影像內部則一致。
+- 同一個裝置上重複執行，結果完全相同。torch backend 只支援 3D、只用線性內插，並忽略
+  `ncores` 和 `verbose`。沒有 CUDA 裝置時會在 CPU 上執行並記錄警告。
 
 ### B-spline
 
@@ -494,6 +546,8 @@ B-spline 為 0.82 mm／17 秒。當你確實需要參數化轉換 —— 可儲�
 | `optimizer='LBFGSB' cannot be combined with grid_scale_factors` | 傳入 `grid_scale_factors=None` |
 | 每次跑結果都不同 | ITK 依執行緒完成順序歸約 metric。固定為單執行緒 |
 | 註冊結果比什麼都不做還糟 | 若剛體用了 `optimizer="gradient_descent"`，改回預設值 |
+| `ImportError: backend='torch' needs PyTorch` | `pip install "pydicomrt[gpu]"` |
+| `backend="torch"` 丟出 `torch.OutOfMemoryError` | 最細一層對這張顯卡太大。用 `isotropic_resample=True, resolution_staging=(8, 4, 1.5)` 把它變粗 |
 
 ### 輸出看起來位移或變形
 

@@ -2355,7 +2355,7 @@ Registration algorithms.
 ### `reg.method.demons_registration`
 
 ```python
-demons_registration(fixed_image: SimpleITK.SimpleITK.Image, moving_image: SimpleITK.SimpleITK.Image, resolution_staging: Sequence[int] = (8, 4, 1), iteration_staging: Sequence[int] = (10, 10, 10), isotropic_resample: bool = False, initial_displacement_field: Optional[SimpleITK.SimpleITK.Image] = None, regularization_kernel_mm: Union[float, Sequence[float]] = 1.5, smoothing_sigma_factor: float = 1.0, smoothing_sigmas: Union[float, Sequence[float], bool, NoneType] = False, default_value: Optional[float] = None, ncores: int = 1, interp_order: int = 2, verbose: bool = False) -> Tuple[SimpleITK.SimpleITK.Image, SimpleITK.SimpleITK.Transform, SimpleITK.SimpleITK.Image]
+demons_registration(fixed_image: SimpleITK.SimpleITK.Image, moving_image: SimpleITK.SimpleITK.Image, resolution_staging: Sequence[int] = (8, 4, 1), iteration_staging: Sequence[int] = (10, 10, 10), isotropic_resample: bool = False, initial_displacement_field: Optional[SimpleITK.SimpleITK.Image] = None, regularization_kernel_mm: Union[float, Sequence[float]] = 1.5, smoothing_sigma_factor: float = 1.0, smoothing_sigmas: Union[float, Sequence[float], bool, NoneType] = False, default_value: Optional[float] = None, ncores: int = 1, interp_order: int = 2, verbose: bool = False, backend: str = 'simpleitk', device: Optional[str] = None) -> Tuple[SimpleITK.SimpleITK.Image, SimpleITK.SimpleITK.Transform, SimpleITK.SimpleITK.Image]
 ```
 
 Deformable registration via Fast Symmetric-Forces Demons (SimpleITK) with multi-resolution strategy.
@@ -2379,7 +2379,7 @@ through the current transform at each level. This does not estimate a rigid alig
   - If `isotropic_resample=False`: values are downsampling shrink factors (typically integers, e.g., [8, 4, 1]).
   - If `isotropic_resample=True`: values are target isotropic voxel sizes in millimeters (floats, e.g., [2.5, 1.0, 0.5]).
 
-- **`iteration_staging`** — *Sequence[int], default = (20, 20, 20)*
+- **`iteration_staging`** — *Sequence[int], default = (10, 10, 10)*
   Number of iterations per pyramid level. Must match the length of `resolution_staging`.
 
 - **`isotropic_resample`** — *bool, default = False*
@@ -2389,7 +2389,7 @@ through the current transform at each level. This does not estimate a rigid alig
   Initial DVF (vector image). If provided, it overrides any `initial_transform` usage
   inside `multiscale_demons` and is resampled onto the fixed grid when needed.
 
-- **`regularization_kernel_mm`** — *float or Sequence[float], default = 1.0*
+- **`regularization_kernel_mm`** — *float or Sequence[float], default = 1.5*
   Standard deviation(s) in millimeters used by demons for smoothing the update and DVF.
   Scalar broadcasts to all axes; sequence length must be 1 or image dimension.
 
@@ -2410,14 +2410,28 @@ through the current transform at each level. This does not estimate a rigid alig
   (min <= -1000), default to -1000.
 
 - **`ncores`** — *int, default = 1*
-  Number of threads for demons filter.
+  Number of threads for demons filter. Ignored by the torch backend.
 
 - **`interp_order`** — *int, default = sitk.sitkLinear*
   Interpolator for resampling (e.g., sitk.sitkNearestNeighbor, sitk.sitkLinear, sitk.sitkBSpline).
+  The torch backend interpolates linearly inside the registration and accepts only
+  `sitk.sitkLinear`.
 
 - **`verbose`** — *bool, default = False*
   If True and a global callback `deformable_registration_command_iteration` is defined,
-  prints per-iteration metric values.
+  prints per-iteration metric values. Ignored by the torch backend.
+
+- **`backend`** — *{"simpleitk", "torch"}, default = "simpleitk"*
+  Which implementation runs the demons iterations. `"torch"` runs the same algorithm
+  on PyTorch -- on a GPU when one is available -- and needs the optional dependency:
+  `pip install "pydicomrt[gpu]"`. It reproduces the SimpleITK field to within a few
+  hundredths of a millimetre and supports 3D images only. Everything else, including
+  the returned objects, is the same for both.
+
+- **`device`** — *str, optional*
+  PyTorch device for `backend="torch"`, e.g. `"cuda"`, `"cuda:1"` or `"cpu"`.
+  `None` uses CUDA when available and otherwise falls back to the CPU with a warning.
+  Must be `None` for the SimpleITK backend.
 
 **Returns**
 
@@ -2435,6 +2449,9 @@ through the current transform at each level. This does not estimate a rigid alig
 - **`ValueError`**
   On invalid arguments (length mismatches, non-positive values, dimension mismatch, etc.).
 
+- **`ImportError`**
+  If `backend="torch"` is requested and PyTorch is not installed.
+
 - **`RuntimeError`**
   If helper `multiscale_demons(...)` is not available in the current scope.
 
@@ -2444,6 +2461,13 @@ through the current transform at each level. This does not estimate a rigid alig
   moving pixel type after resampling.
 - Regularization sigmas are specified in *voxels* to SimpleITK; this function converts
   millimeter inputs to voxel units using the fixed image spacing.
+- GPU memory for `backend="torch"` grows linearly with the voxel count of the finest
+  pyramid level, at roughly 180 bytes per voxel: about 4.5 GB for 512 x 512 x 100. For a
+  volume that does not fit, make the finest level coarser -- e.g. `isotropic_resample=True`
+  with `resolution_staging=(8, 4, 1.5)` -- the returned field is still on the fixed grid.
+  Running out raises `torch.OutOfMemoryError` with an estimate.
+- Iterations are best spent at the finest level: on synthetic tests, raising the coarse
+  levels' counts made the result worse, raising the finest level's made it better.
 
 <a id="regmethodrigid-registration"></a>
 

@@ -22,6 +22,7 @@ src/pydicomrt/
   reg/      Registration: two REG builders/parsers, algorithms, pipeline
     type_transform.py  sitk transform <-> DICOM matrix / deformation grid
     method/     rigid, demons, bspline, soft_demons, common  (SimpleITK algorithms)
+                _demons_torch: PyTorch port of demons, optional (backend="torch")
     pipeline/   registration_pipeline + preprocessing helpers
   dose/     RTDOSE: RTDoseBuilder, sitk_transform.py (get_dose_image)
   ct/       CT Image: CTBuilder
@@ -63,6 +64,9 @@ Counts are parametrised, so the number is per test *case*: 1001 collected by def
 checks for exception classes and no-argument callables — those skips are expected. Without
 `testdata/` another 33 (all of `test/real_data`) skip instead of running. `-m slow` is 8
 real-data tests plus one synthetic B-spline accuracy test.
+
+`test/reg/test_demons_torch.py` needs PyTorch (`pip install -e ".[dev,gpu]"`): without it
+16 of its cases skip, and without CUDA another 8 do. Those skips are expected too.
 
 Real-data tests need `PYDICOMRT_TESTDATA` (or a `testdata/` directory). They skip cleanly
 when it is absent — a skip there is not a failure.
@@ -205,6 +209,22 @@ reads as a CT. Pass `default_value` explicitly for MR, PET, or preprocessed imag
 `load_sorted_image_series()` sorts along the slice normal. Do not assume filename order or
 `InstanceNumber`. An unsorted series still produces a valid-looking volume — just flipped
 in z, with every contour and registration built on it inheriting the flip.
+
+### PyTorch is optional
+
+`torch` is in the `[gpu]` extra, not the core dependencies — it is a multi-gigabyte install
+most users never need. Only `reg/method/_demons_torch.py` imports it, and only
+`demons_registration(backend="torch")` imports that module, lazily. Never add a module-level
+`import torch` anywhere else: `test_default_backend_never_imports_torch` runs a fresh
+interpreter to catch it.
+
+The torch backend is a port of ITK's FastSymmetricForces demons down to boundary handling,
+`itk::GaussianOperator` kernels, the measured `SmoothingRecursiveGaussian` response and the
+`MaximumRMSError` early stop — skipping any of them looks fine at the default schedule and
+drifts by millimetres at long ones. A change to the SimpleITK demons path needs the same change
+there; the parity tests in `test_demons_torch.py` will say so. Do not tighten those tolerances
+using large real volumes: near truncated image edges demons is chaotic on either backend, and
+SimpleITK disagrees with itself there by millimetres under 0.001 HU of input noise.
 
 ### pydicom version
 

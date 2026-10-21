@@ -200,6 +200,8 @@ def demons_registration(
     ncores: int = 1,
     interp_order: int = sitk.sitkLinear,
     verbose: bool = False,
+    backend: str = "simpleitk",
+    device: Optional[str] = None,
 ) -> Tuple[sitk.Image, sitk.Transform, sitk.Image]:
     """
     Deformable registration via Fast Symmetric-Forces Demons (SimpleITK) with multi-resolution strategy.
@@ -220,14 +222,14 @@ def demons_registration(
         Pyramid schedule. Length of this sequence defines the number of pyramid levels.
         - If `isotropic_resample=False`: values are downsampling shrink factors (typically integers, e.g., [8, 4, 1]).
         - If `isotropic_resample=True`: values are target isotropic voxel sizes in millimeters (floats, e.g., [2.5, 1.0, 0.5]).
-    iteration_staging : Sequence[int], default = (20, 20, 20)
+    iteration_staging : Sequence[int], default = (10, 10, 10)
         Number of iterations per pyramid level. Must match the length of `resolution_staging`.
     isotropic_resample : bool, default = False
         If True, interpret `resolution_staging` as isotropic voxel sizes (mm); otherwise as shrink factors.
     initial_displacement_field : Optional[sitk.Image], default = None
         Initial DVF (vector image). If provided, it overrides any `initial_transform` usage
         inside `multiscale_demons` and is resampled onto the fixed grid when needed.
-    regularization_kernel_mm : float or Sequence[float], default = 1.0
+    regularization_kernel_mm : float or Sequence[float], default = 1.5
         Standard deviation(s) in millimeters used by demons for smoothing the update and DVF.
         Scalar broadcasts to all axes; sequence length must be 1 or image dimension.
     smoothing_sigma_factor : float, default = 1.0
@@ -244,12 +246,24 @@ def demons_registration(
         Out-of-bounds value during final resampling. If None, use 0. For CT-like images
         (min <= -1000), default to -1000.
     ncores : int, default = 1
-        Number of threads for demons filter.
+        Number of threads for demons filter. Ignored by the torch backend.
     interp_order : int, default = sitk.sitkLinear
         Interpolator for resampling (e.g., sitk.sitkNearestNeighbor, sitk.sitkLinear, sitk.sitkBSpline).
+        The torch backend interpolates linearly inside the registration and accepts only
+        `sitk.sitkLinear`.
     verbose : bool, default = False
         If True and a global callback `deformable_registration_command_iteration` is defined,
-        prints per-iteration metric values.
+        prints per-iteration metric values. Ignored by the torch backend.
+    backend : {"simpleitk", "torch"}, default = "simpleitk"
+        Which implementation runs the demons iterations. ``"torch"`` runs the same algorithm
+        on PyTorch -- on a GPU when one is available -- and needs the optional dependency:
+        ``pip install "pydicomrt[gpu]"``. It reproduces the SimpleITK field to within a few
+        hundredths of a millimetre and supports 3D images only. Everything else, including
+        the returned objects, is the same for both.
+    device : str, optional
+        PyTorch device for ``backend="torch"``, e.g. ``"cuda"``, ``"cuda:1"`` or ``"cpu"``.
+        ``None`` uses CUDA when available and otherwise falls back to the CPU with a warning.
+        Must be ``None`` for the SimpleITK backend.
 
     Returns
     -------
@@ -264,6 +278,8 @@ def demons_registration(
     ------
     ValueError
         On invalid arguments (length mismatches, non-positive values, dimension mismatch, etc.).
+    ImportError
+        If ``backend="torch"`` is requested and PyTorch is not installed.
     RuntimeError
         If helper `multiscale_demons(...)` is not available in the current scope.
 
@@ -273,6 +289,13 @@ def demons_registration(
       moving pixel type after resampling.
     - Regularization sigmas are specified in *voxels* to SimpleITK; this function converts
       millimeter inputs to voxel units using the fixed image spacing.
+    - GPU memory for ``backend="torch"`` grows linearly with the voxel count of the finest
+      pyramid level, at roughly 180 bytes per voxel: about 4.5 GB for 512 x 512 x 100. For a
+      volume that does not fit, make the finest level coarser -- e.g. ``isotropic_resample=True``
+      with ``resolution_staging=(8, 4, 1.5)`` -- the returned field is still on the fixed grid.
+      Running out raises ``torch.OutOfMemoryError`` with an estimate.
+    - Iterations are best spent at the finest level: on synthetic tests, raising the coarse
+      levels' counts made the result worse, raising the finest level's made it better.
     """
 
     # ---- Basic validation on lists/levels/cores ----
@@ -288,6 +311,15 @@ def demons_registration(
         raise ValueError("All values in `iteration_staging` must be positive integers.")
     if ncores <= 0:
         raise ValueError("`ncores` must be a positive integer.")
+    if backend not in ("simpleitk", "torch"):
+        raise ValueError(f"`backend` must be 'simpleitk' or 'torch', got {backend!r}")
+    if backend == "simpleitk" and device is not None:
+        raise ValueError("`device` applies to backend='torch' only")
+    if backend == "torch":
+        if fixed_image.GetDimension() != 3:
+            raise ValueError("backend='torch' supports 3D images only")
+        if int(interp_order) != sitk.sitkLinear:
+            raise ValueError("backend='torch' interpolates linearly; pass interp_order=sitk.sitkLinear")
 
     # ---- Dimensionality checks ----
     dim = fixed_image.GetDimension()
@@ -357,33 +389,54 @@ def demons_registration(
         )
 
     # ---- Run multi-scale demons to obtain the final DVF ----
-    try:
-        # Preserve float values for isotropic_resample mode, but convert to appropriate types
-        if isotropic_resample:
-            # For isotropic mode, keep as floats (mm values)
-            resolution_staging_processed = tuple(float(x) for x in resolution_staging)
-        else:
-            # For shrink factor mode, can use integers
-            resolution_staging_processed = tuple(float(x) for x in resolution_staging)
-        
-        deformation_field: sitk.Image = multiscale_demons(
-            registration_algorithm=registration_method,
-            fixed_image=fixed_image,
-            moving_image=moving_image,
-            resolution_staging=resolution_staging_processed,
+    if backend == "torch":
+        try:
+            from ._demons_torch import multiscale_demons_torch
+        except ImportError as error:
+            raise ImportError(
+                "backend='torch' needs PyTorch, which pydicomrt does not install by default: "
+                "pip install \"pydicomrt[gpu]\""
+            ) from error
+        deformation_field = multiscale_demons_torch(
+            fixed_image,
+            moving_image,
+            resolution_staging=tuple(float(x) for x in resolution_staging),
             smoothing_sigmas=smoothing_sigmas_list,
             iteration_staging=tuple(int(x) for x in iteration_staging),
             isotropic_resample=bool(isotropic_resample),
-            initial_displacement_field=initial_displacement_field,
-            interp_order=int(interp_order),
-            default_value=default_value,
             regularization_kernel_mm=kernel_mm,
+            initial_displacement_field=initial_displacement_field,
+            default_value=default_value,
+            device=device,
         )
-    except NameError as e:
-        # Provide a clearer error if helper function is missing
-        raise RuntimeError(
-            "Required helper `multiscale_demons(...)` is not defined in the current scope."
-        ) from e
+    else:
+        try:
+            # Preserve float values for isotropic_resample mode, but convert to appropriate types
+            if isotropic_resample:
+                # For isotropic mode, keep as floats (mm values)
+                resolution_staging_processed = tuple(float(x) for x in resolution_staging)
+            else:
+                # For shrink factor mode, can use integers
+                resolution_staging_processed = tuple(float(x) for x in resolution_staging)
+        
+            deformation_field: sitk.Image = multiscale_demons(
+                registration_algorithm=registration_method,
+                fixed_image=fixed_image,
+                moving_image=moving_image,
+                resolution_staging=resolution_staging_processed,
+                smoothing_sigmas=smoothing_sigmas_list,
+                iteration_staging=tuple(int(x) for x in iteration_staging),
+                isotropic_resample=bool(isotropic_resample),
+                initial_displacement_field=initial_displacement_field,
+                interp_order=int(interp_order),
+                default_value=default_value,
+                regularization_kernel_mm=kernel_mm,
+            )
+        except NameError as e:
+            # Provide a clearer error if helper function is missing
+            raise RuntimeError(
+                "Required helper `multiscale_demons(...)` is not defined in the current scope."
+            ) from e
 
     # ---- Build a resampler to warp the moving image using the DVF ----
     resampler = sitk.ResampleImageFilter()

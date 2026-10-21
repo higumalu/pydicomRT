@@ -24,6 +24,13 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
 ]
+# demons_registration(backend="torch"). Kept out of the core dependencies on purpose: PyTorch
+# is a multi-gigabyte install, and the default SimpleITK backend does not need it. Install a
+# CUDA build of torch for GPU acceleration; the default PyPI wheel may be CPU-only on some
+# platforms.
+gpu = [
+    "torch>=2.1",
+]
 
 [project.scripts]
 pydicomrt = "pydicomrt:main"
