@@ -51,10 +51,10 @@ class TestAgainstTheClinicalObject:
         Anything the TPS writes and we do not is worth knowing about. A short allow-list
         covers what is genuinely vendor-specific or not ours to invent.
         """
-        # All Type 3, and all describing the acquisition device rather than the software
-        # that wrote the object -- not ours to invent.
+        # Type 3, and describing the site rather than the software that wrote the
+        # object -- not ours to invent. (DeviceSerialNumber is Type 1 here, via the
+        # Enhanced General Equipment module, so the builder writes it.)
         vendor_specific = {
-            "DeviceSerialNumber",
             "StationName",
             "InstitutionalDepartmentName",
         }

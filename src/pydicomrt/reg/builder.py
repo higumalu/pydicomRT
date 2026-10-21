@@ -176,6 +176,7 @@ class BaseRegistrationBuilder(ABC):
         self.uid_prefix = None
         self.ref_ds = self.fixed_series[0]
         self.instance_number = 1
+        self.set_equipment()
         self.registration_dataset_list = []
         # Every series this object references, keyed by Series Instance UID, for the
         # Common Instance Reference module.
@@ -218,6 +219,57 @@ class BaseRegistrationBuilder(ABC):
             self, so calls chain.
         """
         self.instance_number = instance_number
+        return self
+
+    def set_equipment(
+        self: BuilderT,
+        manufacturer: str = "pydicomRT",
+        model_name: str = "pydicomRT",
+        device_serial_number: str = "pydicomRT",
+        software_versions: str = f"pydicomRT {_PYDICOMRT_VERSION}",
+    ) -> BuilderT:
+        """
+        Set the Enhanced General Equipment attributes.
+
+        Parameters
+        ----------
+        manufacturer : str
+            Manufacturer (0008,0070). Default ``"pydicomRT"``.
+        model_name : str
+            Manufacturer's Model Name (0008,1090). Default ``"pydicomRT"``.
+        device_serial_number : str
+            Device Serial Number (0018,1000). Default ``"pydicomRT"``.
+        software_versions : str
+            Software Versions (0018,1020). Default ``"pydicomRT <installed version>"``.
+
+        Returns
+        -------
+        SpatialRegistrationBuilder or DeformableSpatialRegistrationBuilder
+            self, so calls chain.
+
+        Raises
+        ------
+        ValueError
+            If a value is empty or longer than 64 characters.
+
+        Notes
+        -----
+        All four are Type 1 in both registration IODs, and a TPS refuses the import if any
+        is missing or empty. The defaults describe this library, which is what wrote the
+        object; override them when a receiving system expects the site's own equipment.
+        Arguments left out reset to their default.
+        """
+        equipment = {
+            "Manufacturer": manufacturer,
+            "ManufacturerModelName": model_name,
+            "DeviceSerialNumber": device_serial_number,
+            "SoftwareVersions": software_versions,
+        }
+        for keyword, value in equipment.items():
+            # All four are VR LO: 64 characters maximum.
+            if not isinstance(value, str) or not value.strip() or len(value) > 64:
+                raise ValueError(f"{keyword} must be a non-empty string of at most 64 characters")
+        self.equipment = equipment
         return self
 
     @property
@@ -267,12 +319,11 @@ class BaseRegistrationBuilder(ABC):
         ds.InstanceCreationDate = dt.strftime("%Y%m%d")
         ds.InstanceCreationTime = dt.strftime("%H%M%S")
         ds.Modality = "REG"
-        ds.Manufacturer = ""
-        ds.ManufacturerModelName = "pydicomRT"
+        # Both REG IODs include the Enhanced General Equipment module (PS3.3 C.7.5.2),
+        # which makes these four Type 1; a TPS rejects the file if any is missing or empty.
+        for keyword, value in self.equipment.items():
+            setattr(ds, keyword, value)
         ds.InstitutionName = ""
-        # Which build produced this object; the only equipment attribute we can honestly
-        # fill in, since the rest describe an acquisition device this is not.
-        ds.SoftwareVersions = f"pydicomRT {_PYDICOMRT_VERSION}"
         ds.SOPClassUID = ds.file_meta.MediaStorageSOPClassUID
         ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID
         return ds

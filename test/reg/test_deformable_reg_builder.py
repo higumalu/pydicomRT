@@ -112,6 +112,52 @@ def test_builds_deformable_registration_iod(deformable_reg_ds):
     assert reg_ds.FrameOfReferenceUID == fixed_ref.FrameOfReferenceUID
 
 
+def test_enhanced_general_equipment_is_filled_in(deformable_reg_ds):
+    """Type 1 in the Deformable REG IOD; a TPS refused the import with Manufacturer empty
+    and Device Serial Number missing."""
+    reg_ds, _, _ = deformable_reg_ds
+
+    for keyword in ("Manufacturer", "ManufacturerModelName",
+                    "DeviceSerialNumber", "SoftwareVersions"):
+        assert reg_ds.get(keyword), keyword
+
+
+def test_equipment_can_be_overridden():
+    fixed_ref = make_fake_fixed_ref_ds()
+    moving_list = [make_fake_moving_instance(fixed_ref.FrameOfReferenceUID)]
+
+    reg_ds = (
+        DeformableSpatialRegistrationBuilder([fixed_ref])
+        .set_equipment(manufacturer="EverFortuneAI", device_serial_number="SN-001")
+        .add_registration(moving_list, make_displacement_field_transform(shift=(1.0, 0.0, 0.0)))
+        .build()
+    )
+
+    assert reg_ds.Manufacturer == "EverFortuneAI"
+    assert reg_ds.DeviceSerialNumber == "SN-001"
+    # Arguments left out keep their default
+    assert reg_ds.ManufacturerModelName == "pydicomRT"
+    assert reg_ds.SoftwareVersions.startswith("pydicomRT")
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "x" * 65, None])
+def test_equipment_rejects_values_a_tps_would_refuse(bad):
+    builder = DeformableSpatialRegistrationBuilder([make_fake_fixed_ref_ds()])
+
+    with pytest.raises(ValueError, match="Manufacturer"):
+        builder.set_equipment(manufacturer=bad)
+
+
+def test_missing_device_serial_number_fails_the_iod_check(deformable_reg_ds):
+    reg_ds, _, _ = deformable_reg_ds
+    del reg_ds.DeviceSerialNumber
+
+    result = check_deformable_reg_iod(reg_ds)
+
+    assert result["result"] is False
+    assert any("DeviceSerialNumber" in message for message in result["content"])
+
+
 def test_generated_uids_honour_the_prefix(deformable_reg_ds):
     reg_ds, _, _ = deformable_reg_ds
     prefix = "1.2.826.0.1.3680043.2.1125."

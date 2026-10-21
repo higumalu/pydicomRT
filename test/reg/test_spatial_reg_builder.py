@@ -68,6 +68,21 @@ class TestIodConformance:
         # ContentLabel is VR CS: 16 characters maximum
         assert len(reg_ds.ContentLabel) <= 16
 
+    def test_enhanced_general_equipment_is_filled_in(self, reg_ds):
+        """Type 1 in both REG IODs; a TPS refused the import with Manufacturer empty and
+        Device Serial Number missing."""
+        for keyword in ("Manufacturer", "ManufacturerModelName",
+                        "DeviceSerialNumber", "SoftwareVersions"):
+            assert reg_ds.get(keyword), keyword
+
+    def test_empty_manufacturer_fails_the_iod_check(self, reg_ds):
+        reg_ds.Manufacturer = ""
+
+        result = check_spatial_reg_iod(reg_ds)
+
+        assert result["result"] is False
+        assert any("Manufacturer" in message for message in result["content"])
+
     def test_implementation_class_uid_is_a_real_uid(self, fixed_series, moving_series):
         """Without a prefix this used to be built as the string "1"."""
         builder = SpatialRegistrationBuilder(fixed_series)

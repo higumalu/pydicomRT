@@ -214,6 +214,16 @@ handing back a dataset that fails conformance. The constructor, for its part, re
 reference image to share one Frame of Reference, so a series list assembled from two studies
 is rejected before any registration is added.
 
+Both REG objects carry four Type 1 equipment attributes — Manufacturer, Manufacturer's
+Model Name, Device Serial Number and Software Versions — and a TPS refuses the import if
+any is missing or empty. They default to `pydicomRT` (Software Versions also records the
+installed version). If the receiving system expects your site's own values, set them with
+`set_equipment()`; arguments you leave out keep their default:
+
+```python
+builder.set_equipment(manufacturer="My Hospital", device_serial_number="SN-001")
+```
+
 ### Deformable, exported as DICOM REG
 
 Deformable REG maps fixed → moving. For rigid followed by deformable registration,

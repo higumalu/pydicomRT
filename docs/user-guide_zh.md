@@ -207,6 +207,15 @@ builder 在寫入前會驗證矩陣：16 個元素、最後一列是 `[0, 0, 0, 
 建構子這邊則要求所有 reference 影像共用同一個 Frame of Reference，所以由兩個 study 拼起來的
 序列 list 在還沒加入任何 registration 前就會被擋下。
 
+兩種 REG 物件都帶有四個 Type 1 的設備欄位 —— Manufacturer、Manufacturer's Model Name、
+Device Serial Number 與 Software Versions —— 只要有一個缺漏或為空，TPS 就會拒絕匯入。它們的
+預設值是 `pydicomRT`（Software Versions 另外記錄安裝的版本）。若接收端系統要求填院內自己的
+值，可用 `set_equipment()` 設定；沒傳入的參數維持預設值：
+
+```python
+builder.set_equipment(manufacturer="My Hospital", device_serial_number="SN-001")
+```
+
 ### 可變形註冊並匯出成 DICOM REG
 
 Deformable REG 的方向是 fixed → moving。對 rigid 後接 deformable 的流程，grid 放 residual

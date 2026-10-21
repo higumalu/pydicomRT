@@ -1797,6 +1797,45 @@ Assemble the dataset.
 - **`ValueError`**
   If no registration has been added or the assembled dataset fails validation.
 
+#### `SpatialRegistrationBuilder.set_equipment`
+
+```python
+set_equipment(self: ~BuilderT, manufacturer: str = 'pydicomRT', model_name: str = 'pydicomRT', device_serial_number: str = 'pydicomRT', software_versions: str = 'pydicomRT 0.9.1') -> ~BuilderT
+```
+
+Set the Enhanced General Equipment attributes.
+
+**Parameters**
+
+- **`manufacturer`** — *str*
+  Manufacturer (0008,0070). Default `"pydicomRT"`.
+
+- **`model_name`** — *str*
+  Manufacturer's Model Name (0008,1090). Default `"pydicomRT"`.
+
+- **`device_serial_number`** — *str*
+  Device Serial Number (0018,1000). Default `"pydicomRT"`.
+
+- **`software_versions`** — *str*
+  Software Versions (0018,1020). Default `"pydicomRT <installed version>"`.
+
+**Returns**
+
+- **`SpatialRegistrationBuilder or DeformableSpatialRegistrationBuilder`**
+  self, so calls chain.
+
+**Raises**
+
+- **`ValueError`**
+  If a value is empty or longer than 64 characters.
+
+**Notes**
+
+All four are Type 1 in both registration IODs, and a TPS refuses the import if any
+is missing or empty. The defaults describe this library, which is what wrote the
+object; override them when a receiving system expects the site's own equipment.
+Arguments left out reset to their default.
+
 #### `SpatialRegistrationBuilder.set_instance_number`
 
 ```python
@@ -1970,6 +2009,45 @@ Assemble the Deformable Spatial Registration object.
 Unlike `SpatialRegistrationBuilder.build` there is no `include_identity`
 parameter. The deformable IOD carries the fixed frame in
 the top-level FrameOfReferenceUID rather than needing an identity item to mark it.
+
+#### `DeformableSpatialRegistrationBuilder.set_equipment`
+
+```python
+set_equipment(self: ~BuilderT, manufacturer: str = 'pydicomRT', model_name: str = 'pydicomRT', device_serial_number: str = 'pydicomRT', software_versions: str = 'pydicomRT 0.9.1') -> ~BuilderT
+```
+
+Set the Enhanced General Equipment attributes.
+
+**Parameters**
+
+- **`manufacturer`** — *str*
+  Manufacturer (0008,0070). Default `"pydicomRT"`.
+
+- **`model_name`** — *str*
+  Manufacturer's Model Name (0008,1090). Default `"pydicomRT"`.
+
+- **`device_serial_number`** — *str*
+  Device Serial Number (0018,1000). Default `"pydicomRT"`.
+
+- **`software_versions`** — *str*
+  Software Versions (0018,1020). Default `"pydicomRT <installed version>"`.
+
+**Returns**
+
+- **`SpatialRegistrationBuilder or DeformableSpatialRegistrationBuilder`**
+  self, so calls chain.
+
+**Raises**
+
+- **`ValueError`**
+  If a value is empty or longer than 64 characters.
+
+**Notes**
+
+All four are Type 1 in both registration IODs, and a TPS refuses the import if any
+is missing or empty. The defaults describe this library, which is what wrote the
+object; override them when a receiving system expects the site's own equipment.
+Arguments left out reset to their default.
 
 #### `DeformableSpatialRegistrationBuilder.set_instance_number`
 
