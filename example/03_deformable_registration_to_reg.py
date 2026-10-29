@@ -3,7 +3,10 @@ Rigid pre-alignment followed by demons deformable registration, exported as a DI
 Deformable Spatial Registration.
 
 Run:  python example/03_deformable_registration_to_reg.py
+      python example/03_deformable_registration_to_reg.py --gpu   # needs pydicomrt[gpu]
 """
+
+import sys
 
 import numpy as np
 import SimpleITK as sitk
@@ -30,11 +33,15 @@ moving_rigid = sitk.Resample(
 )
 
 # 3. Demons. Returns the resampled image, a displacement-field transform, and the field.
+#    backend="torch" runs the same registration on PyTorch -- on a GPU when there is one --
+#    after `pip install "pydicomrt[gpu]"`; everything below is unchanged either way.
+backend = "torch" if "--gpu" in sys.argv else "simpleitk"
 _, deformable_transform, displacement_field = demons_registration(
     fixed_image,
     moving_rigid,
     resolution_staging=(4, 2),
     iteration_staging=(10, 10),
+    backend=backend,
 )
 
 # 4. Deformable REG maps fixed -> moving, unlike Spatial REG. The pipeline maps
@@ -59,6 +66,7 @@ reg_ds = (
 grid = reg_ds.DeformableRegistrationSequence[0].DeformableRegistrationGridSequence[0]
 vectors = np.frombuffer(grid.VectorGridData, dtype="<f4").reshape(-1, 3)
 
+print(f"demons backend             : {backend}")
 print(f"rigid stage (fixed->moving): {tuple(round(v, 2) for v in rigid_transform.GetTranslation())}")
 print(f"grid dimensions            : {list(grid.GridDimensions)}")
 print(f"grid resolution (mm)       : {[round(float(v), 3) for v in grid.GridResolution]}")

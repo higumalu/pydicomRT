@@ -147,6 +147,7 @@ matrix = affine_to_homogeneous_matrix(transform.GetInverse())
 python example/01_rtstruct_from_mask.py
 python example/02_rigid_registration_to_reg.py
 python example/03_deformable_registration_to_reg.py
+python example/03_deformable_registration_to_reg.py --gpu   # 用 PyTorch 跑 demons；需安裝 [gpu]
 python example/04_rtdose.py
 ```
 
@@ -234,6 +235,8 @@ moving_rigid = sitk.Resample(
 )
 
 _, deformable_transform, displacement_field = demons_registration(fixed_image, moving_rigid)
+# 用 GPU 跑（需先 `pip install "pydicomrt[gpu]"`）—— 結果與回傳值都相同：
+# demons_registration(fixed_image, moving_rigid, backend="torch")
 
 reg_ds = (
     DeformableSpatialRegistrationBuilder(fixed_series)

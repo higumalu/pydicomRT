@@ -153,6 +153,7 @@ the snippets below are taken from them.
 python example/01_rtstruct_from_mask.py
 python example/02_rigid_registration_to_reg.py
 python example/03_deformable_registration_to_reg.py
+python example/03_deformable_registration_to_reg.py --gpu   # demons on PyTorch; needs [gpu]
 python example/04_rtdose.py
 ```
 
@@ -240,6 +241,8 @@ moving_rigid = sitk.Resample(
 )
 
 _, deformable_transform, displacement_field = demons_registration(fixed_image, moving_rigid)
+# on a GPU, after `pip install "pydicomrt[gpu]"` -- same result, same return values:
+# demons_registration(fixed_image, moving_rigid, backend="torch")
 
 reg_ds = (
     DeformableSpatialRegistrationBuilder(fixed_series)
