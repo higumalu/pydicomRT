@@ -44,6 +44,11 @@ pip install "pydicomrt[gpu]"
 若 pip 預設的 PyTorch wheel 在你的平台上只有 CPU 版，請先自行安裝 CUDA 版的 PyTorch（見
 pytorch.org）；這個 extra 只是把 `torch` 加進需求。
 
+wheel 內含一個小型的 C++ 編譯函式庫，是 `rigid_registration` 預設演算法的內層迴圈。它本身
+沒有任何依賴，所以不是額外套件，每次安裝都會有。從原始碼安裝（`pip install -e .`，或沒有
+現成 wheel 的平台）時會編譯它，需要 C++17 編譯器；CMake 會自動下載。沒有編譯器也能裝好，
+`rigid_registration` 改用 numpy 跑同一個演算法，約慢十倍。
+
 存檔一律使用 pydicom 3 的寫法：
 
 ```python
@@ -393,7 +398,7 @@ CT 是 single-frame IOD，所以 `check_ct_iod` 一次檢查一張切片。
 
 | | 適用時機 | 成本 |
 |---|---|---|
-| `rigid_registration` | 只需要位置與方向 | 完整 CT/CBCT 單執行緒約 9 分鐘 |
+| `rigid_registration` | 只需要位置與方向 | 腦部 MR/CT 8 執行緒約 1 秒 |
 | `demons_registration` | 可變形，預設首選 —— 同模態（CT↔CT、CT↔CBCT） | 快，且對參數寬容 |
 | `demons_registration(metric="mind")` | 可變形，不同模態（MR→CT） | GPU 上數秒；需要 `[gpu]` |
 | `bspline_registration` | 可變形，需要參數化轉換時 | 同等精度下約為 demons 的 40 倍 |
@@ -408,14 +413,37 @@ B-spline 為 0.82 mm／17 秒。當你確實需要參數化轉換 —— 可儲�
 
 ### 剛體
 
-預設 optimizer 是 `"regular_step"`，梯度反向時會縮小步長，因此不會從一個好位置走開。
-`"gradient_descent"` 也可用，速度約快九倍，但它可能回傳比自己初始化還差的結果卻仍宣稱收斂：
-在真實 CT/CBCT 上與 TPS 註冊比對，它是 37.5 mm，而預設值是 7.5 mm。把它當預覽用，不是等
-價替代品。
+```python
+transform = rigid_registration(fixed_image, moving_image)
+```
 
-註冊只有在單執行緒下才逐位元可重現 —— ITK 依執行緒完成順序歸約 metric，在那組真實資料上，
-執行緒數會讓答案差超過 15 mm。需要決定性結果時請呼叫
-`sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(1)`。
+本套件自己實作的 elastix 策略：每次迭代在新的隨機點上計算 Mattes 互資訊，在四層平滑金字塔上
+做自適應隨機梯度上升，最後在一組固定的 50 萬個點上做確定性的收尾。它用的是線性內插本身的精確
+導數，排程是固定的。
+
+與 elastix 預設的 rigid 比較（平均誤差，mm；超過 5 mm 算失敗）：
+
+| | `rigid_registration` | elastix |
+|---|---:|---:|
+| RIRE 腦部 MR → CT，骨釘真值（6 個 MR 序列） | 1.38 | 1.32 |
+| RIRE，同一次檢查 T1/T2/PD 的一致性（16 位病人） | 1.33 | 1.31 |
+| RIRE，MR header 隨機移動最多 ±10°、±20 mm（10 個起點） | 1.24 | 1.35 |
+| SynthRAD2023 腦部 MR → CT，header 移動（9 組） | 0.53 | 1.00 |
+| 骨盆 CT/CBCT，對 TPS 註冊（1 組） | 5.1 | 16.7 |
+| 時間，腦部 MR/CT，8 執行緒 | 約 1.2 秒 | 約 1.2 秒 |
+
+兩者都在同一位 RIRE 病人上失敗（該次檢查的序列之間相差約 8 mm），比較可能是序列之間病人真的
+有移動。骨盆資料上，單執行緒約 15 秒。
+
+- `backend`：`"auto"`（預設）使用編譯核心；若是在沒有 C++ 編譯器的環境從原始碼安裝，則用
+  numpy，約慢十倍。兩者抽到相同的隨機點；但捨入誤差偶爾會讓個別點落到相鄰的直方圖 bin，
+  隨機步驟會把它延續下去，所以兩個後端的答案最多相差約 0.2 mm。
+- `seed`：隨機點的種子。骨盆資料上種子 0–2 的結果是 5.09–5.16 mm。
+- `threads`：編譯核心的執行緒數，`None` 時取 SimpleITK 的全域預設值。答案與它無關。
+
+`algorithm="itk"` 保留先前的預設：SimpleITK 的 `ImageRegistrationMethod`，以及它的參數
+（`histogram_bins`、`optimizer`、`shrink_factors` 等）。它只有在單執行緒下才逐位元可重現，
+因為 ITK 依執行緒完成順序歸約 metric。
 
 ### 在 GPU 上跑 demons
 
@@ -557,9 +585,9 @@ REG；匯出方式和 CT 對 CT 相同。
 形變比對得出的。
 
 - 序列載入與 SimpleITK 自己的 GDCM reader 完全一致，包含幾何與體素值。
-- `rigid_registration` 整體重現臨床註冊到 7.5 mm，其中上下軸小於 1 mm。殘差主要在前後軸，
-  該處全視野互資訊的峰值距離臨床答案約 10 mm —— 也就是說在這組資料上，metric 與 TPS 是真的
-  不一致。
+- `rigid_registration` 整體重現臨床註冊到 5.1 mm，`(+1.6, −4.7, −1.1)` mm。殘差主要在前後軸，
+  該處全視野互資訊的峰值偏離臨床答案 —— 也就是說在這組資料上，metric 與 TPS 是真的不一致。
+  另外在公開的腦部 MR/CT 上與骨釘真值比對過（RIRE：一位病人，1990 年代 4 mm 切片）。
 - **可變形註冊從未與臨床標準答案比對過。** 上面那些 B-spline 數字是用 B-spline 還原
   B-spline 形變，是最有利的測試條件。真實的解剖形變並不是 B-spline 形狀的。
 - `metric="mind"` 是在九組公開的腦部 MR/CT 配對上，以加在真實影像上的*已知合成*形變量測
@@ -606,9 +634,10 @@ REG；匯出方式和 CT 對 CT 相同。
 | 警告 "the fit is underdetermined" | B-spline 的係數多於 metric 取樣點。調高 `sampling_rate`、加粗 `initial_grid_spacing`，或去掉最粗那層 |
 | `optimizer must be one of (...)` | 檢查拼字，清單在 `bspline.OPTIMIZERS` |
 | `optimizer='LBFGSB' cannot be combined with grid_scale_factors` | 傳入 `grid_scale_factors=None` |
-| 每次跑結果都不同 | ITK 依執行緒完成順序歸約 metric。固定為單執行緒 |
-| 註冊結果比什麼都不做還糟 | 若剛體用了 `optimizer="gradient_descent"`，改回預設值 |
+| 每次跑結果都不同 | 用 `algorithm="itk"` 時，ITK 依執行緒完成順序歸約 metric：固定為單執行緒。預設演算法與執行緒數無關；檢查 `seed` |
+| 註冊結果比什麼都不做還糟 | 若用了 `algorithm="itk", optimizer="gradient_descent"`，改回預設值 |
 | `ImportError: backend='torch' needs PyTorch` | `pip install "pydicomrt[gpu]"` |
+| `ImportError: backend='cpp' needs the compiled core` | pydicomrt 是在沒有 C++ 編譯器的環境從原始碼安裝的。改裝 wheel，或在有 C++17 編譯器的環境重裝；在那之前 `backend="auto"` 會用 numpy |
 | `backend="torch"` 丟出 `torch.OutOfMemoryError` | 最細一層對這張顯卡太大。用 `isotropic_resample=True, resolution_staging=(8, 4, 1.5)` 把它變粗（`metric="mind"` 用 `(6, 3, 1.5)`） |
 | `metric='mind' runs on backend='torch' only` | 加上 `backend="torch"`；MIND 沒有 SimpleITK 的實作 |
 | MR 對到 CT 後變形扭曲，不該動的地方動了數毫米 | 在多模態配對上用了預設的 intensity metric。改用 `metric="mind"` |

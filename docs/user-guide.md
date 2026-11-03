@@ -45,6 +45,13 @@ pip install "pydicomrt[gpu]"
 If pip's default PyTorch wheel is CPU-only on your platform, install a CUDA build of PyTorch
 first (see pytorch.org); the extra only adds `torch` as a requirement.
 
+The wheels include a small compiled C++ library, the inner loops of `rigid_registration`'s
+default algorithm. It has no dependencies of its own, so it is not an extra: every install
+gets it. Installing from source (`pip install -e .`, or a platform without a wheel) builds it
+and needs a C++17 compiler; CMake is fetched automatically. Without a compiler the install
+still succeeds, and `rigid_registration` runs the same algorithm on numpy, about ten times
+slower.
+
 Saving uses the pydicom 3 spelling throughout:
 
 ```python
@@ -411,7 +418,7 @@ CT is a single-frame IOD, so `check_ct_iod` takes one slice at a time.
 
 | | Use when | Cost |
 |---|---|---|
-| `rigid_registration` | Position and orientation only | ~9 min on a full CT/CBCT pair, single-threaded |
+| `rigid_registration` | Position and orientation only | ~1 s for a brain MR/CT with 8 threads |
 | `demons_registration` | Deformable, the default choice — same modality (CT↔CT, CT↔CBCT) | fast, forgiving of its parameters |
 | `demons_registration(metric="mind")` | Deformable, different modalities (MR→CT) | a few seconds on a GPU; needs `[gpu]` |
 | `bspline_registration` | Deformable, when you need a parametric transform | ~40x demons for the same accuracy |
@@ -428,16 +435,41 @@ same intensity in both images. For MR to CT, use `metric="mind"`; see
 
 ### Rigid
 
-The default optimizer is `"regular_step"`, which shrinks its step whenever the gradient
-reverses and so cannot walk away from a good position. `"gradient_descent"` is available and
-about nine times faster, but it can return an alignment worse than its own initialisation
-while still reporting convergence: measured against a TPS registration on a real CT/CBCT
-pair, 37.5 mm out against 7.5 mm for the default. Treat it as a preview, not an equivalent.
+```python
+transform = rigid_registration(fixed_image, moving_image)
+```
 
-Registration is only bit-reproducible single-threaded — ITK reduces the metric in thread
-completion order, and on that real pair the thread count moved the answer by more than
-15 mm. Call `sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(1)` when you need
-determinism.
+The library's own implementation of elastix's strategy: Mattes mutual information on fresh
+random points every iteration, adaptive stochastic gradient ascent over a four-level
+smoothing pyramid, then a deterministic finish on one fixed set of 500 000 points. It uses
+the exact derivative of the linear interpolant, and its schedule is fixed.
+
+Measured against elastix's default rigid (mean error, mm; failure = more than 5 mm):
+
+| | `rigid_registration` | elastix |
+|---|---:|---:|
+| RIRE brain MR → CT, fiducial gold standard (6 MR sequences) | 1.38 | 1.32 |
+| RIRE, agreement of T1/T2/PD from one session (16 patients) | 1.33 | 1.31 |
+| RIRE, MR header moved by up to ±10°, ±20 mm (10 starts) | 1.24 | 1.35 |
+| SynthRAD2023 brain MR → CT, header moved (9 pairs) | 0.53 | 1.00 |
+| Pelvis CT/CBCT against the TPS registration (1 pair) | 5.1 | 16.7 |
+| Time, brain MR/CT, 8 threads | ~1.2 s | ~1.2 s |
+
+Both fail on one RIRE patient (about 8 mm between that session's sequences), probably real
+motion between them. On the pelvis pair it takes about 15 s single-threaded.
+
+- `backend`: `"auto"` (default) uses the compiled core, or numpy — about ten times slower —
+  in an installation built from source without a C++ compiler. Both draw the same random
+  points; rounding still tips the odd point into a neighbouring histogram bin and the
+  stochastic steps carry that forward, so the two backends' answers differ by up to about
+  0.2 mm.
+- `seed`: the random points. Seeds 0–2 on the pelvis pair gave 5.09–5.16 mm.
+- `threads`: the compiled core's threads, SimpleITK's global default when `None`. The answer
+  does not depend on it.
+
+`algorithm="itk"` keeps the previous default, SimpleITK's `ImageRegistrationMethod`, with
+its parameters (`histogram_bins`, `optimizer`, `shrink_factors`, …). It is only
+bit-reproducible single-threaded, since ITK reduces the metric in thread completion order.
 
 ### Demons on a GPU
 
@@ -597,10 +629,11 @@ Registration accuracy has been measured against a TPS registration on **one** re
 planning CT / CBCT pelvis pair, and against known deformations on synthetic phantoms.
 
 - Series loading matches SimpleITK's own GDCM reader exactly, geometry and voxel values.
-- `rigid_registration` reproduces the clinical registration to 7.5 mm overall, with the
-  superior-inferior axis under 1 mm. Most of the residual is anterior-posterior, where
-  full-field-of-view mutual information peaks about 10 mm from the clinical answer — so on
-  that pair the metric and the TPS genuinely disagree.
+- `rigid_registration` reproduces the clinical registration to 5.1 mm overall,
+  `(+1.6, −4.7, −1.1)` mm. Most of the residual is anterior-posterior, where full-field-of-view
+  mutual information peaks away from the clinical answer — so on that pair the metric and the
+  TPS genuinely disagree. It was also measured on public brain MR/CT against a fiducial gold
+  standard (RIRE: one patient, 1990s 4 mm slices).
 - **Deformable registration has never been run against a clinical ground truth.** The
   B-spline measurements above recover a B-spline deformation with a B-spline, which is the
   most favourable possible test. Real anatomical deformation is not B-spline shaped.
@@ -648,9 +681,10 @@ One case is not a validation. Check the residual against your own tolerance.
 | Warning: "the fit is underdetermined" | B-spline has more coefficients than metric samples. Raise `sampling_rate`, coarsen `initial_grid_spacing`, or drop the coarsest level |
 | `optimizer must be one of (...)` | Check spelling; the list is `bspline.OPTIMIZERS` |
 | `optimizer='LBFGSB' cannot be combined with grid_scale_factors` | Pass `grid_scale_factors=None` |
-| Result differs between runs | ITK reduces the metric in thread completion order. Pin to one thread |
-| Registration returns something worse than doing nothing | If using `optimizer="gradient_descent"` on rigid, switch to the default |
+| Result differs between runs | With `algorithm="itk"`, ITK reduces the metric in thread completion order: pin to one thread. The default does not depend on it; check `seed` |
+| Registration returns something worse than doing nothing | If using `algorithm="itk", optimizer="gradient_descent"`, switch to the default |
 | `ImportError: backend='torch' needs PyTorch` | `pip install "pydicomrt[gpu]"` |
+| `ImportError: backend='cpp' needs the compiled core` | pydicomrt was built from source without a C++ compiler. Install a wheel, or reinstall with a C++17 compiler; `backend="auto"` runs on numpy meanwhile |
 | `torch.OutOfMemoryError` from `backend="torch"` | The finest pyramid level is too big for the card. Coarsen it with `isotropic_resample=True, resolution_staging=(8, 4, 1.5)` (`(6, 3, 1.5)` for `metric="mind"`) |
 | `metric='mind' runs on backend='torch' only` | Add `backend="torch"`; MIND has no SimpleITK implementation |
 | MR registered to CT is distorted, several mm of motion where none should be | The default intensity metric on a multimodal pair. Use `metric="mind"` |

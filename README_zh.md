@@ -28,6 +28,10 @@ cd pydicomRT
 pip install -e ".[dev]"
 ```
 
+wheel 內含一個小型的 C++ 編譯函式庫，是 `rigid_registration` 的內層迴圈。從原始碼安裝時會
+編譯它，需要 C++17 編譯器（CMake 會自動下載）。沒有編譯器也能裝好，`rigid_registration`
+改用 numpy 執行，約慢十倍。
+
 需要 Python ≥ 3.10，以及 `pydicom`、`numpy`、`SimpleITK`、`opencv-python`、`scipy`。
 本函式庫是針對 pydicom 3 撰寫的。
 
@@ -281,29 +285,28 @@ dose_image = get_dose_image(dose_ds)     # 轉回 sitk，已套用 DoseGridScali
 
 - 序列讀取與 SimpleITK 自家的 GDCM reader **完全一致** —— 幾何與體素值都相同。
 - `get_spatial_registrations` 能正確讀取 TPS 的註冊檔，方向與文件所述相符。
-- `rigid_registration` 與臨床註冊整體相差 7.5mm，而原本最差的上下方向（z）已在 1mm 以內。
+- `rigid_registration` 與臨床註冊整體相差 5.1mm。
 
-與 TPS transform 的實測偏差，單位 mm，格式 `(x, y, z)`：
+與 elastix 預設的 rigid 比較（平均誤差，mm）。骨盆那一列是與 TPS transform 的偏差；腦部
+各列使用公開資料（RIRE、SynthRAD2023），詳見[使用指南](docs/user-guide_zh.md#剛體)：
 
-| `optimizer=` | 偏差 | 距離 | 耗時 |
-|---|---|---|---|
-| `"regular_step"`（預設） | `(+2.8, −7.0, −0.9)` | **7.5** | 約 9 分鐘 |
-| `"gradient_descent"` | `(+1.4, −8.0, −36.7)` | 37.5 | 約 1 分鐘 |
+| | `rigid_registration` | elastix |
+|---|---|---|
+| 骨盆 CT/CBCT，偏差 `(x, y, z)` | `(+1.6, −4.7, −1.1)`，**5.1** | 16.7，其中 16 在 z |
+| RIRE 腦部 MR → CT，骨釘真值 | 1.38 | 1.32 |
+| RIRE，MR 隨機移動最多 ±10°、±20 mm | 1.24 | 1.35 |
+| SynthRAD2023 腦部 MR → CT | 0.53 | 1.00 |
 
-`"gradient_descent"` 可能在估計出的第一步就衝過頭、落進平坦區，然後收斂視窗判定「成功」——
-回傳一個**比自己起點還差**的結果，而且完全不會拋出任何錯誤。
-`"regular_step"` 在梯度方向反轉時會縮小步長，因此不會跑掉。
-預設採用慢但可靠的那個；快速路徑仍可選用，適合預覽或需要反覆重跑的流程。
+骨盆資料上單執行緒約 15 秒，腦部 MR/CT 8 執行緒約 1 秒。答案與執行緒數無關。
 
 **已知落差：**
 
-- **剩下的約 7mm 幾乎全在前後方向（y），而且不一定是本函式庫的誤差。**
-  在臨床答案附近掃描 y 可以看到，全視野互資訊的最佳點落在偏離臨床答案約 10mm 處 ——
+- **剩下的約 5mm 主要在前後方向（y），而且不一定是本函式庫的誤差。**
+  在臨床答案附近掃描 y 可以看到，全視野互資訊的最佳點偏離臨床答案 ——
   在這組資料上，指標與 TPS 本身就不一致。要再縮小就得把指標限制在 ROI 內，目前尚未實作。
   **一個案例不等於驗證**：請用你自己的容差標準檢查殘差。
-- **結果只有在單執行緒下可重現。** ITK 依執行緒完成順序歸約指標值；
-  在真實配對上，執行緒數會讓答案差異超過 15mm。需要確定性時請呼叫
-  `sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(1)`。
+- **`algorithm="itk"`（先前的預設）只有在單執行緒下可重現。** ITK 依執行緒完成順序歸約
+  指標值；在真實配對上，執行緒數會讓答案差異超過 15mm。預設演算法沒有這個問題。
 - **只有軸向掃描做過端到端驗證。** 傾斜與非等向的幾何處理已實作並有單元測試，
   但尚未在真實的斜向檢查上跑過。
 - **預設的 demons 只適用同模態。** 它比較的是亮度；在腦部 MR/CT 配對上，它會在沒有任何

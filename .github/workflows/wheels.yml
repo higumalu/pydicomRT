@@ -1,0 +1,85 @@
+# Platform wheels, the sdist, and the PyPI release. pydicomrt ships a small C++ library
+# (csrc/rigid_core.cpp), so each platform needs its own wheel; the [tool.cibuildwheel] table in
+# pyproject.toml says how. pip picks the matching wheel, so users still just `pip install pydicomrt`.
+#
+# Not built: Windows on ARM and musl Linux. SimpleITK and opencv-python publish no wheels there, so
+# pydicomrt could not be installed on them anyway; the sdist covers anything else.
+#
+# Releasing: push a tag `vX.Y.Z` matching the version in pyproject.toml. The publish job uses PyPI
+# trusted publishing -- register this repository, workflow `wheels.yml` and environment `pypi` as a
+# trusted publisher on the PyPI project once, and no token is needed.
+name: wheels
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths: ["csrc/**", "CMakeLists.txt", "pyproject.toml", ".github/workflows/wheels.yml"]
+
+jobs:
+  wheels:
+    name: wheel ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux x86_64 / aarch64, macOS Intel / Apple silicon, Windows x86_64.
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pypa/cibuildwheel@v3.4.1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  # cibuildwheel tests each wheel on one Python. The library has no Python ABI, so the same wheel
+  # must also work on the oldest and newest supported Python; check that it does.
+  python-versions:
+    needs: wheels
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-ubuntu-latest
+          path: wheelhouse
+      - run: python -m pip install wheelhouse/*.whl pytest
+      # From a scratch directory, so `import pydicomrt` finds the installed wheel, not src/.
+      - run: |
+          mkdir scratch && cp -r test pyproject.toml scratch/ && cd scratch
+          python -c "import pydicomrt.reg.method._rigid_core"
+          python -m pytest -q test/reg/test_rigid_stochastic.py
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: pipx run build --sdist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-sdist
+          path: dist/*.tar.gz
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [wheels, python-versions, sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@v1.14.3

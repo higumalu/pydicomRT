@@ -98,7 +98,7 @@ Three distinct concerns, deliberately separated:
 
 | Layer | What it does | Coordinate convention |
 |---|---|---|
-| `reg/method/` | Runs SimpleITK registration algorithms; demons optionally on PyTorch (`_demons_torch.py`), which also hosts the multimodal `metric="mind"` | returns *fixed → moving* |
+| `reg/method/` | Runs SimpleITK registration algorithms; demons optionally on PyTorch (`_demons_torch.py`), which also hosts the multimodal `metric="mind"`; rigid by default with the library's own stochastic MI (`_stochastic_rigid.py` in numpy, or the C++ core `csrc/rigid_core.cpp` through `_rigid_core.py`; `algorithm="itk"` for SimpleITK's) | returns *fixed → moving* |
 | `reg/pipeline/` | Sequences stages, preprocessing, composition | same |
 | `reg/builder.py`, `reg/parser.py` | Spatial REG serialisation | *moving → fixed* |
 | `reg/builder.py`, `reg/parser.py` | Deformable REG serialisation | *fixed → moving* |

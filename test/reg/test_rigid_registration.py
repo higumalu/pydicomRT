@@ -1,5 +1,7 @@
 """
-Rigid registration accuracy and optimizer sanity.
+Rigid registration accuracy and optimizer sanity, for ``algorithm="itk"`` (the SimpleITK
+path, the previous default); the default stochastic algorithm is tested in
+``test_rigid_stochastic.py``.
 
 The failure mode these guard against is silent: the optimizer overshoots, the convergence
 window declares success, and a plausible-looking transform comes back tens of millimetres
@@ -92,14 +94,14 @@ class TestRigidAccuracy:
         truth = known_rigid_transform(angle_deg, shift)
         moving = warp(textured_phantom, truth)
 
-        recovered = rigid_registration(textured_phantom, moving)
+        recovered = rigid_registration(textured_phantom, moving, algorithm="itk")
 
         # Worst measured case is 0.78 mm; 2 mm leaves room for interpolation differences
         # without letting a real regression through.
         assert mapping_error_mm(recovered, truth) < 2.0
 
     def test_identical_images_give_an_identity_transform(self, textured_phantom):
-        recovered = rigid_registration(textured_phantom, textured_phantom)
+        recovered = rigid_registration(textured_phantom, textured_phantom, algorithm="itk")
 
         assert mapping_error_mm(recovered, sitk.Transform(3, sitk.sitkIdentity)) < 2.0
 
@@ -115,7 +117,7 @@ class TestRigidAccuracy:
         shifted.SetOrigin(tuple(o + s for o, s in zip(textured_phantom.GetOrigin(), shift)))
         truth = sitk.TranslationTransform(3, shift)
 
-        recovered = rigid_registration(textured_phantom, shifted)
+        recovered = rigid_registration(textured_phantom, shifted, algorithm="itk")
 
         assert mapping_error_mm(recovered, truth) < 2.0
 
@@ -128,7 +130,7 @@ class TestRigidAccuracy:
         moving = warp(textured_phantom, truth)
         assert moving.GetOrigin() == textured_phantom.GetOrigin()
 
-        recovered = rigid_registration(textured_phantom, moving)
+        recovered = rigid_registration(textured_phantom, moving, algorithm="itk")
 
         assert mapping_error_mm(recovered, truth) < 5.0
 
@@ -159,7 +161,7 @@ class TestOptimizerDoesNotRegress:
             sitk.VersorRigid3DTransform(),
             sitk.CenteredTransformInitializerFilter.GEOMETRY,
         ))
-        final_score = score(rigid_registration(textured_phantom, moving))
+        final_score = score(rigid_registration(textured_phantom, moving, algorithm="itk"))
 
         # Mattes MI is returned negated, so lower is better.
         assert final_score <= initial_score + 1e-3
@@ -171,7 +173,7 @@ class TestOptimizerChoice:
         moving = warp(textured_phantom, truth)
 
         recovered = rigid_registration(
-            textured_phantom, moving, optimizer="gradient_descent"
+            textured_phantom, moving, algorithm="itk", optimizer="gradient_descent"
         )
 
         # The fast path is offered for speed, not accuracy -- a loose bound on purpose.
@@ -179,7 +181,7 @@ class TestOptimizerChoice:
 
     def test_unknown_optimizer_is_rejected(self, textured_phantom):
         with pytest.raises(ValueError, match="regular_step"):
-            rigid_registration(textured_phantom, textured_phantom, optimizer="adam")
+            rigid_registration(textured_phantom, textured_phantom, algorithm="itk", optimizer="adam")
 
 
 class TestParameterValidation:
@@ -188,6 +190,7 @@ class TestParameterValidation:
             rigid_registration(
                 textured_phantom,
                 textured_phantom,
+                algorithm="itk",
                 shrink_factors=(4, 2, 1),
                 smoothing_sigmas=(2.0, 0.0),
             )
@@ -197,7 +200,7 @@ class TestParameterValidation:
         moving = warp(textured_phantom, truth)
 
         recovered = rigid_registration(
-            textured_phantom, moving, shrink_factors=None, smoothing_sigmas=None
+            textured_phantom, moving, algorithm="itk", shrink_factors=None, smoothing_sigmas=None
         )
 
         assert isinstance(recovered, sitk.AffineTransform)
