@@ -22,7 +22,8 @@ src/pydicomrt/
   reg/      Registration: two REG builders/parsers, algorithms, pipeline
     type_transform.py  sitk transform <-> DICOM matrix / deformation grid
     method/     rigid, demons, bspline, soft_demons, common  (SimpleITK algorithms)
-                _demons_torch: PyTorch port of demons, optional (backend="torch")
+                _demons_torch: PyTorch port of demons, optional (backend="torch"),
+                               plus metric="mind" (MIND-SSC demons, MR <-> CT)
     pipeline/   registration_pipeline + preprocessing helpers
   dose/     RTDOSE: RTDoseBuilder, sitk_transform.py (get_dose_image)
   ct/       CT Image: CTBuilder
@@ -34,7 +35,9 @@ test/
   conftest.py         fixtures; pins SimpleITK to one thread
   test_*_conventions.py  guardrails, not feature tests — see "Conventions the suite enforces"
   real_data/          opt-in tests against real clinical DICOM, skipped when absent
-example/              01–04 are verified and standalone; the README snippets come from these.
+example/              01–05 are verified and standalone; the README snippets come from these.
+                      05 (MR -> CT, metric="mind") needs [gpu]; without torch it prints the
+                      install hint and exits 0.
                       rs_example_*.py are 0.8-style and read `example/data/`, which is not
                       in the repo — they fail on a clean checkout. Do not cite them.
 docs/user-guide.md    task-by-task manual: parameters, errors, 0.8 -> 0.9 migration
@@ -53,20 +56,20 @@ placeholder `main()`. Import from the subpackages: `from pydicomrt.rs import ...
 
 ```bash
 pip install -e ".[dev]"
-pytest                                    # ~1000 tests, ~35 s
+pytest                                    # ~1070 tests, ~60 s
 pytest -m slow                            # 9 full-size registrations, tens of minutes
-python example/01_rtstruct_from_mask.py   # 01–04 run standalone
+python example/01_rtstruct_from_mask.py   # 01–05 run standalone
 python docs/generate_api_reference.py     # after any public docstring change
 ```
 
-Counts are parametrised, so the number is per test *case*: 1001 collected by default,
-992 passing here plus 9 skips from `test_docstring_conventions.py` opting out of parameter
+Counts are parametrised, so the number is per test *case*: 1066 collected by default,
+1057 passing here plus 9 skips from `test_docstring_conventions.py` opting out of parameter
 checks for exception classes and no-argument callables — those skips are expected. Without
 `testdata/` another 33 (all of `test/real_data`) skip instead of running. `-m slow` is 8
 real-data tests plus one synthetic B-spline accuracy test.
 
 `test/reg/test_demons_torch.py` needs PyTorch (`pip install -e ".[dev,gpu]"`): without it
-16 of its cases skip, and without CUDA another 8 do. Those skips are expected too.
+33 of its cases skip, and with torch but no CUDA 16 do. Those skips are expected too.
 
 Real-data tests need `PYDICOMRT_TESTDATA` (or a `testdata/` directory). They skip cleanly
 when it is absent — a skip there is not a failure.
@@ -226,6 +229,16 @@ there; the parity tests in `test_demons_torch.py` will say so. Do not tighten th
 using large real volumes: near truncated image edges demons is chaotic on either backend, and
 SimpleITK disagrees with itself there by millimetres under 0.001 HU of input noise.
 
+`metric="mind"` lives in the same module but is *not* a port and has no SimpleITK twin. It
+deliberately departs from ITK's multiscale scheme: one displacement field is carried through
+all levels and smoothed as a whole every iteration, instead of a refinement per level composed
+onto a frozen total. With descriptor forces the composed scheme let coarse-level drift stand
+-- 3 mm of invented motion in the brain on undeformed MR/CT pairs against 0.6 mm. Its
+defaults differ too (`METRIC_DEFAULTS` in `demons.py`); the intensity ones invent motion with
+this metric. Its tests assert recovery of a known deformation across a non-monotonic
+intensity map, no motion on an aligned multimodal pair, and gain/offset invariance. The
+research behind the choices is in `internal/mr_ct_deform/` (not in version control).
+
 ### pydicom version
 
 The code requires pydicom 3. `save_as(..., write_like_original=False)` is gone; use
@@ -269,6 +282,11 @@ Be straight with users about these rather than presenting registration output as
 - **Only axial acquisitions are exercised end to end.** The geometry conventions above are
   implemented and unit-tested for oblique and anisotropic data, but no real oblique study
   has been run through the library.
+- **Default demons is single-modality.** It compares intensities; MR → CT needs
+  `metric="mind"`, and so does `registration_pipeline` (its deformable stage is demons). That
+  metric is measured on nine public brain MR/CT pairs against known synthetic deformations,
+  3D T1 only — not against a clinical ground truth. A deformable MR → CT result also hides
+  real change (tumour growth, oedema); for a brain target rigid is usually enough.
 
 ## If you change something
 
@@ -282,5 +300,5 @@ Be straight with users about these rather than presenting registration output as
   so editing `docs/api-reference.md` by hand loses the edit at the next run.
 - Anything user-facing: `README.md` / `docs/user-guide.md` have `_zh` mirrors. Update both,
   or they drift apart silently.
-- Anything in `example/`: `01`–`04` are the documentation. Run them.
+- Anything in `example/`: `01`–`05` are the documentation. Run them (05 with torch).
 - Do not commit patient data. `testdata/` is gitignored; keep it that way.

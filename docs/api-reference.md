@@ -2355,7 +2355,7 @@ Registration algorithms.
 ### `reg.method.demons_registration`
 
 ```python
-demons_registration(fixed_image: SimpleITK.SimpleITK.Image, moving_image: SimpleITK.SimpleITK.Image, resolution_staging: Sequence[int] = (8, 4, 1), iteration_staging: Sequence[int] = (10, 10, 10), isotropic_resample: bool = False, initial_displacement_field: Optional[SimpleITK.SimpleITK.Image] = None, regularization_kernel_mm: Union[float, Sequence[float]] = 1.5, smoothing_sigma_factor: float = 1.0, smoothing_sigmas: Union[float, Sequence[float], bool, NoneType] = False, default_value: Optional[float] = None, ncores: int = 1, interp_order: int = 2, verbose: bool = False, backend: str = 'simpleitk', device: Optional[str] = None) -> Tuple[SimpleITK.SimpleITK.Image, SimpleITK.SimpleITK.Transform, SimpleITK.SimpleITK.Image]
+demons_registration(fixed_image: SimpleITK.SimpleITK.Image, moving_image: SimpleITK.SimpleITK.Image, resolution_staging: Optional[Sequence[int]] = None, iteration_staging: Optional[Sequence[int]] = None, isotropic_resample: bool = False, initial_displacement_field: Optional[SimpleITK.SimpleITK.Image] = None, regularization_kernel_mm: Union[float, Sequence[float], NoneType] = None, smoothing_sigma_factor: Optional[float] = None, smoothing_sigmas: Union[float, Sequence[float], bool, NoneType] = False, default_value: Optional[float] = None, ncores: int = 1, interp_order: int = 2, verbose: bool = False, backend: str = 'simpleitk', device: Optional[str] = None, metric: str = 'intensity') -> Tuple[SimpleITK.SimpleITK.Image, SimpleITK.SimpleITK.Transform, SimpleITK.SimpleITK.Image]
 ```
 
 Deformable registration via Fast Symmetric-Forces Demons (SimpleITK) with multi-resolution strategy.
@@ -2366,6 +2366,11 @@ displacement-field transform to resample the moving image into the fixed image s
 Inputs may have different grids; moving data are sampled onto the fixed pyramid grid
 through the current transform at each level. This does not estimate a rigid alignment.
 
+Demons compares intensities by default, which is only meaningful when the same tissue has
+the same intensity in both images: CT to CT, CT to CBCT. For MR to CT use
+`metric="mind"` (with `backend="torch"`); the intensity metric produces several
+millimetres of motion that is not there.
+
 **Parameters**
 
 - **`fixed_image`** — *sitk.Image*
@@ -2374,13 +2379,16 @@ through the current transform at each level. This does not estimate a rigid alig
 - **`moving_image`** — *sitk.Image*
   Image to be warped into the fixed image space.
 
-- **`resolution_staging`** — *Sequence[int or float], default = (8, 4, 1)*
+- **`resolution_staging`** — *Sequence[int or float], optional*
   Pyramid schedule. Length of this sequence defines the number of pyramid levels.
+  `None` means (8, 4, 1) for `metric="intensity"` and (4, 2, 1) for `"mind"`.
   - If `isotropic_resample=False`: values are downsampling shrink factors (typically integers, e.g., [8, 4, 1]).
   - If `isotropic_resample=True`: values are target isotropic voxel sizes in millimeters (floats, e.g., [2.5, 1.0, 0.5]).
 
-- **`iteration_staging`** — *Sequence[int], default = (10, 10, 10)*
+- **`iteration_staging`** — *Sequence[int], optional*
   Number of iterations per pyramid level. Must match the length of `resolution_staging`.
+  `None` means (10, 10, 10) for `metric="intensity"` and (100, 100, 200) for
+  `"mind"`. Either way a level stops early once its updates become negligible.
 
 - **`isotropic_resample`** — *bool, default = False*
   If True, interpret `resolution_staging` as isotropic voxel sizes (mm); otherwise as shrink factors.
@@ -2389,13 +2397,15 @@ through the current transform at each level. This does not estimate a rigid alig
   Initial DVF (vector image). If provided, it overrides any `initial_transform` usage
   inside `multiscale_demons` and is resampled onto the fixed grid when needed.
 
-- **`regularization_kernel_mm`** — *float or Sequence[float], default = 1.5*
+- **`regularization_kernel_mm`** — *float or Sequence[float], optional*
   Standard deviation(s) in millimeters used by demons for smoothing the update and DVF.
   Scalar broadcasts to all axes; sequence length must be 1 or image dimension.
+  `None` means 1.5 for `metric="intensity"` and 3.0 for `"mind"`.
 
-- **`smoothing_sigma_factor`** — *float, default = 1.0*
+- **`smoothing_sigma_factor`** — *float, optional*
   Fallback factor to derive `smoothing_sigmas` per level if `smoothing_sigmas` is not provided.
   Each level's sigma = `resolution_staging[level] * smoothing_sigma_factor`.
+  `None` means 1.0 for `metric="intensity"` and 0.5 for `"mind"`.
 
 - **`smoothing_sigmas`** — *float or Sequence[float] or bool, default = False*
   Per-level Gaussian sigmas (in physical units, mm) used for image smoothing
@@ -2433,6 +2443,14 @@ through the current transform at each level. This does not estimate a rigid alig
   `None` uses CUDA when available and otherwise falls back to the CPU with a warning.
   Must be `None` for the SimpleITK backend.
 
+- **`metric`** — *{"intensity", "mind"}, default = "intensity"*
+  What the demons force compares. `"intensity"` is ITK's demons: the intensity
+  difference, so single-modality only. `"mind"` compares MIND-SSC descriptors
+  (Heinrich et al., 2013) -- at every voxel, how alike the neighbouring patches are --
+  which depend on where the edges are and not on which side is brighter, so the images
+  may be of different modalities (MR to CT) and need no intensity normalisation.
+  `"mind"` needs `backend="torch"` and changes the defaults noted above; see Notes.
+
 **Returns**
 
 - **`registered_image`** — *sitk.Image*
@@ -2468,6 +2486,17 @@ through the current transform at each level. This does not estimate a rigid alig
   Running out raises `torch.OutOfMemoryError` with an estimate.
 - Iterations are best spent at the finest level: on synthetic tests, raising the coarse
   levels' counts made the result worse, raising the finest level's made it better.
+- `metric="mind"` carries one displacement field through all pyramid levels instead of
+  composing a refinement per level as ITK's multiscale scheme does, so it does not
+  reproduce any SimpleITK result. It needs about 360 bytes of device memory per voxel of
+  the finest level -- twice the intensity metric -- so register a planning CT at
+  1-1.5 mm (`isotropic_resample=True`, e.g. `resolution_staging=(6, 3, 1.5)`) rather
+  than at its native in-plane resolution. MIND sees edges, so the result is only as good
+  as the edges the two images share; on 2D MR series with 3-5 mm slices, motion along the
+  slice direction is mostly filled in by the regularisation.
+- Validated on public brain MR/CT pairs (SynthRAD2023) against known deformations only. A
+  deformable result between MR and CT also moves real anatomical change -- tumour growth,
+  oedema, resection cavities -- out of sight; review it before contouring on it.
 
 <a id="regmethodrigid-registration"></a>
 

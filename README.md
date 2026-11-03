@@ -155,6 +155,7 @@ python example/02_rigid_registration_to_reg.py
 python example/03_deformable_registration_to_reg.py
 python example/03_deformable_registration_to_reg.py --gpu   # demons on PyTorch; needs [gpu]
 python example/04_rtdose.py
+python example/05_mr_to_ct_deformable.py                    # MR -> CT with metric="mind"; needs [gpu]
 ```
 
 ### RTSTRUCT from a 3D mask, and back
@@ -243,6 +244,9 @@ moving_rigid = sitk.Resample(
 _, deformable_transform, displacement_field = demons_registration(fixed_image, moving_rigid)
 # on a GPU, after `pip install "pydicomrt[gpu]"` -- same result, same return values:
 # demons_registration(fixed_image, moving_rigid, backend="torch")
+# MR -> CT: demons compares intensities, which differ between modalities, so compare MIND
+# descriptors instead (pad the resampled MR with 0, not -1000):
+# demons_registration(ct_image, mr_on_ct, backend="torch", metric="mind", default_value=0.0)
 
 reg_ds = (
     DeformableSpatialRegistrationBuilder(fixed_series)
@@ -313,6 +317,10 @@ path stays selectable for previews and pipelines that re-run often.
   `sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(1)` when you need determinism.
 - **Only axial acquisitions have been run end to end.** Oblique and anisotropic geometry is
   implemented and unit-tested, but not exercised on a real study.
+- **Default demons is single-modality.** It compares intensities; on brain MR/CT pairs it
+  moves the brain by 9 mm where nothing moved. Use `metric="mind"` for MR → CT — measured on
+  nine public brain pairs against known synthetic deformations, not against a clinical ground
+  truth. See the user guide, "MR to CT".
 
 Two gaps that used to sit here have since closed, and both had been written up with a
 plausible explanation first. The superior-inferior error was blamed on the CBCT's limited

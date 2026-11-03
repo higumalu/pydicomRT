@@ -394,13 +394,17 @@ CT 是 single-frame IOD，所以 `check_ct_iod` 一次檢查一張切片。
 | | 適用時機 | 成本 |
 |---|---|---|
 | `rigid_registration` | 只需要位置與方向 | 完整 CT/CBCT 單執行緒約 9 分鐘 |
-| `demons_registration` | 可變形，預設首選 | 快，且對參數寬容 |
+| `demons_registration` | 可變形，預設首選 —— 同模態（CT↔CT、CT↔CBCT） | 快，且對參數寬容 |
+| `demons_registration(metric="mind")` | 可變形，不同模態（MR→CT） | GPU 上數秒；需要 `[gpu]` |
 | `bspline_registration` | 可變形，需要參數化轉換時 | 同等精度下約為 demons 的 40 倍 |
 | `demons_with_soft_mask` | 可變形，限制在特定結構內 | 同 demons |
 
 **可變形註冊請優先用 demons。** 在還原 2.11 mm 形變的合成假體上，demons 為 0.80 mm／0.4 秒，
 B-spline 為 0.82 mm／17 秒。當你確實需要參數化轉換 —— 可儲存、可操作的控制點 —— 而不是位移
 場時，才選 B-spline。demons 也可以在 GPU 上跑，見下文。
+
+**demons 比較的是亮度**，所以預設只在同一組織在兩張影像亮度相同時才成立。MR 對 CT 請用
+`metric="mind"`，見 [MR 對 CT](#mr-對-ctmetricmind)。
 
 ### 剛體
 
@@ -455,6 +459,62 @@ registration_pipeline(fixed_image, moving_image,
 - 同一個裝置上重複執行，結果完全相同。torch backend 只支援 3D、只用線性內插，並忽略
   `ncores` 和 `verbose`。沒有 CUDA 裝置時會在 CPU 上執行並記錄警告。
 
+### MR 對 CT：`metric="mind"`
+
+demons 的力是兩張影像的亮度差，這在 MR 和 CT 之間沒有意義 —— 骨頭在一邊亮、在另一邊暗。在
+沒有形變的腦部 MR/CT 配對上，預設 metric 會把腦平均移動 9 mm；`registration_pipeline` 的
+可變形階段就是 demons，所以也一樣。`metric="mind"` 把亮度換成 MIND-SSC 描述子（Heinrich
+et al., 2013）：每個體素周圍的小區塊彼此有多像。這取決於邊在哪裡，而不是哪一側比較亮，
+所以只要 MR 和 CT 都看得到同一條邊界，描述子就相同。
+
+```python
+rigid = rigid_registration(ct_image, mr_image)            # 互資訊：MR 沒問題
+mr_on_ct = sitk.Resample(mr_image, ct_image, rigid, sitk.sitkLinear, 0.0)  # MR 用 0 補邊
+
+registered, transform, field = demons_registration(
+    ct_image, mr_on_ct, backend="torch", metric="mind", default_value=0.0,
+)
+
+# 或透過 pipeline
+registration_pipeline(ct_image, mr_image, default_value=0.0,
+                      deformable_kwargs={"backend": "torch", "metric": "mind"})
+```
+
+`example/05_mr_to_ct_deformable.py` 用一組已知答案的合成配對完整跑一次，並寫出 Deformable
+REG；匯出方式和 CT 對 CT 相同。
+
+- **需要 `backend="torch"`**（`[gpu]` 這個 extra；CUDA 顯卡不是必要的，CPU 也能跑，只是慢）。
+- **直接輸入原始數值。** MIND 不受增益與偏移影響，CT 值和 MR 訊號照原樣傳入即可。MR 配對
+  不要在 pipeline 設 `window_clip`：它會把同一個窗位套到兩張影像上，CT 的窗位會把 MR 壓平。
+- **預設值不同**：`resolution_staging=(4, 2, 1)`、`iteration_staging=(100, 100, 200)`、
+  `regularization_kernel_mm=3.0`、`smoothing_sigma_factor=0.5`。intensity 的預設值
+  （(8, 4, 1)、1.5 mm）在這個 metric 下各自會讓憑空產生的位移升到 2–4 mm。明確傳入的值則照原樣使用。
+- **記憶體**：最細一層每個體素約 360 bytes，是 intensity metric 的兩倍。原始解析度的定位
+  CT 請在 1–1.5 mm 下註冊：`isotropic_resample=True, resolution_staging=(6, 3, 1.5)`。回傳的
+  場仍在 fixed 的格點上。
+- 它不會重現 SimpleITK 的結果：它讓同一個場貫穿所有金字塔層級，而不是每層組合一個修正量，
+  這樣較細的層級才能修正較粗層級的錯。
+
+在九組公開的腦部 MR/CT 配對上量測（SynthRAD2023：放療定位 CT 與 3D T1，主辦方只做了剛體
+對位），已知形變加在 CT 上：
+
+| | 未形變配對上腦的移動量 | 已知 2.7 mm 形變的誤差 | 時間 |
+|---|---|---|---|
+| 不做可變形 | 0 | 2.74 mm | — |
+| `metric="intensity"` | 9.1 mm | 9.3 mm | 約 1 秒 |
+| `bspline_registration(metric="mutual_information")`（單例） | 6.6 mm | 6.6 mm | 13 分鐘 |
+| `metric="mind"` | 0.62 mm | 0.86 mm | 約 9 秒 |
+
+互資訊適用於剛體註冊 —— 只有六個參數 —— 但密集或 B-spline 形變可以靠扭曲腦外的結構把它
+拉高，而它真的會這麼做。未形變配對上的 0.62 mm 有一部分是真的（MR 失真、姿勢；這些配對只做
+過剛體對位）：在直接由 CT 做出、完全沒有殘差的合成 MR 上，`"mind"` 讓腦移動約 0.1 mm。
+
+**腦部標靶通常只要剛體就夠了。** 在這些量測中，可變形階段讓腦移動的量遠小於 1 mm；真正的
+形變在頸部和顱底，8° 的頸部屈曲只還原了約三分之一。而且可變形結果會把真實的解剖變化 ——
+腫瘤長大、水腫、術後腔室 —— 一起「對齊」掉。在上面畫輪廓之前請先檢查。MIND 看的是邊，所以
+層厚 3–5 mm 的 2D MR 序列在層面方向上提供的資訊很少；請用 3D T1 對 CT 註冊，同一次 MR 檢查的
+其他序列再透過它們與該 T1 的剛體對位帶過來。
+
 ### B-spline
 
 決定一次 B-spline 擬合有沒有意義的參數，是 **metric 取樣點數與轉換係數量的比值**。取樣太少
@@ -500,8 +560,10 @@ registration_pipeline(fixed_image, moving_image,
 - `rigid_registration` 整體重現臨床註冊到 7.5 mm，其中上下軸小於 1 mm。殘差主要在前後軸，
   該處全視野互資訊的峰值距離臨床答案約 10 mm —— 也就是說在這組資料上，metric 與 TPS 是真的
   不一致。
-- **可變形註冊從未在真實臨床資料上驗證過。** 上面那些 B-spline 數字是用 B-spline 還原
+- **可變形註冊從未與臨床標準答案比對過。** 上面那些 B-spline 數字是用 B-spline 還原
   B-spline 形變，是最有利的測試條件。真實的解剖形變並不是 B-spline 形狀的。
+- `metric="mind"` 是在九組公開的腦部 MR/CT 配對上，以加在真實影像上的*已知合成*形變量測
+  的 —— 只有 3D T1，沒有 T2/FLAIR，也沒有腫瘤變化。
 
 一組資料不構成驗證。請用你自己的容許值去檢查殘差。
 
@@ -547,7 +609,9 @@ registration_pipeline(fixed_image, moving_image,
 | 每次跑結果都不同 | ITK 依執行緒完成順序歸約 metric。固定為單執行緒 |
 | 註冊結果比什麼都不做還糟 | 若剛體用了 `optimizer="gradient_descent"`，改回預設值 |
 | `ImportError: backend='torch' needs PyTorch` | `pip install "pydicomrt[gpu]"` |
-| `backend="torch"` 丟出 `torch.OutOfMemoryError` | 最細一層對這張顯卡太大。用 `isotropic_resample=True, resolution_staging=(8, 4, 1.5)` 把它變粗 |
+| `backend="torch"` 丟出 `torch.OutOfMemoryError` | 最細一層對這張顯卡太大。用 `isotropic_resample=True, resolution_staging=(8, 4, 1.5)` 把它變粗（`metric="mind"` 用 `(6, 3, 1.5)`） |
+| `metric='mind' runs on backend='torch' only` | 加上 `backend="torch"`；MIND 沒有 SimpleITK 的實作 |
+| MR 對到 CT 後變形扭曲，不該動的地方動了數毫米 | 在多模態配對上用了預設的 intensity metric。改用 `metric="mind"` |
 
 ### 輸出看起來位移或變形
 

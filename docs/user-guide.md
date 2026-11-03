@@ -412,7 +412,8 @@ CT is a single-frame IOD, so `check_ct_iod` takes one slice at a time.
 | | Use when | Cost |
 |---|---|---|
 | `rigid_registration` | Position and orientation only | ~9 min on a full CT/CBCT pair, single-threaded |
-| `demons_registration` | Deformable, the default choice | fast, forgiving of its parameters |
+| `demons_registration` | Deformable, the default choice — same modality (CT↔CT, CT↔CBCT) | fast, forgiving of its parameters |
+| `demons_registration(metric="mind")` | Deformable, different modalities (MR→CT) | a few seconds on a GPU; needs `[gpu]` |
 | `bspline_registration` | Deformable, when you need a parametric transform | ~40x demons for the same accuracy |
 | `demons_with_soft_mask` | Deformable, restricted to a structure | as demons |
 
@@ -420,6 +421,10 @@ CT is a single-frame IOD, so `check_ct_iod` takes one slice at a time.
 deformation, demons scores 0.80 mm in 0.4 s against B-spline's 0.82 mm in 17 s. Reach for
 B-spline when you specifically need a parametric transform — control points you can store or
 manipulate — rather than a displacement field. Demons can also run on a GPU; see below.
+
+**Demons compares intensities**, so by default it only works when the same tissue has the
+same intensity in both images. For MR to CT, use `metric="mind"`; see
+[MR to CT](#mr-to-ct-metricmind).
 
 ### Rigid
 
@@ -481,6 +486,72 @@ Both scale linearly with iterations, so the ratio holds as you raise them.
   interpolates linearly, and ignores `ncores` and `verbose`. With no CUDA device it runs on
   the CPU and logs a warning.
 
+### MR to CT: `metric="mind"`
+
+Demons' force is the intensity difference between the images, which means nothing between MR
+and CT — bone is bright on one and dark on the other. On undeformed brain MR/CT pairs the
+default metric moves the brain by 9 mm on average, and so does `registration_pipeline`, whose
+deformable stage is demons. `metric="mind"` replaces the intensities with MIND-SSC
+descriptors (Heinrich et al., 2013): at every voxel, how alike its neighbouring patches are.
+That depends on where the edges are, not on which side is brighter, so it is the same in MR
+and CT wherever both show the same boundary.
+
+```python
+rigid = rigid_registration(ct_image, mr_image)            # mutual information: MR is fine
+mr_on_ct = sitk.Resample(mr_image, ct_image, rigid, sitk.sitkLinear, 0.0)  # pad MR with 0
+
+registered, transform, field = demons_registration(
+    ct_image, mr_on_ct, backend="torch", metric="mind", default_value=0.0,
+)
+
+# or through the pipeline
+registration_pipeline(ct_image, mr_image, default_value=0.0,
+                      deformable_kwargs={"backend": "torch", "metric": "mind"})
+```
+
+`example/05_mr_to_ct_deformable.py` runs this end to end on a synthetic pair with a known
+answer and writes the Deformable REG; the export is the same as for CT to CT.
+
+- **It needs `backend="torch"`** (the `[gpu]` extra; a CUDA card is optional — the CPU works,
+  slowly).
+- **Feed it raw values.** MIND is unchanged by gain and offset, so CT numbers and MR signal go
+  in as they are. Do not set `window_clip` in the pipeline for an MR pair: it applies one
+  window to both images, and a CT window flattens the MR.
+- **Its defaults differ**: `resolution_staging=(4, 2, 1)`, `iteration_staging=(100, 100, 200)`,
+  `regularization_kernel_mm=3.0`, `smoothing_sigma_factor=0.5`. The intensity defaults
+  ((8, 4, 1), 1.5 mm) each raised the invented motion to 2–4 mm with this metric. Anything you
+  pass explicitly is used as given.
+- **Memory**: about 360 bytes per voxel of the finest level, twice the intensity metric. For a
+  full-resolution planning CT, register at 1–1.5 mm: `isotropic_resample=True,
+  resolution_staging=(6, 3, 1.5)`. The field still comes back on the fixed grid.
+- It does not reproduce SimpleITK: it carries one field through all pyramid levels instead
+  of composing a refinement per level, which is what keeps a finer level able to correct a
+  coarser one.
+
+Measured on nine public brain MR/CT pairs (SynthRAD2023: radiotherapy planning CT and 3D
+T1, rigidly aligned by the organisers), with known deformations applied to the CT:
+
+| | brain moved on an undeformed pair | error, known 2.7 mm deformation | time |
+|---|---|---|---|
+| no deformable stage | 0 | 2.74 mm | — |
+| `metric="intensity"` | 9.1 mm | 9.3 mm | ~1 s |
+| `bspline_registration(metric="mutual_information")` (one case) | 6.6 mm | 6.6 mm | 13 min |
+| `metric="mind"` | 0.62 mm | 0.86 mm | ~9 s |
+
+Mutual information works for rigid registration — six parameters — but a dense or B-spline
+deformation can raise it by distorting what lies outside the brain, and does. Part of the
+0.62 mm on undeformed pairs is real (MR distortion, posture; the pairs were only rigidly
+aligned): on a synthetic MR made from the CT itself, with no residual at all, `"mind"` moves
+the brain by about 0.1 mm.
+
+**For a brain target, rigid is usually the answer.** In those measurements the deformable
+stage moved the brain by well under a millimetre; the real deformation is in the neck and
+skull base, where an 8° flexion was only a third recovered. And a deformable result moves
+real anatomical change — tumour growth, oedema, a resection cavity — out of sight. Review it
+before contouring on it. MIND sees edges, so 2D MR series with 3–5 mm slices give it little
+to go on along the slice direction; register the 3D T1 to the CT and bring other series of
+the same MR study across through their rigid alignment to that T1.
+
 ### B-spline
 
 The parameter that governs whether a B-spline fit means anything is the ratio of metric
@@ -530,9 +601,11 @@ planning CT / CBCT pelvis pair, and against known deformations on synthetic phan
   superior-inferior axis under 1 mm. Most of the residual is anterior-posterior, where
   full-field-of-view mutual information peaks about 10 mm from the clinical answer — so on
   that pair the metric and the TPS genuinely disagree.
-- **Deformable registration has never been run against real clinical data.** The B-spline
-  measurements above recover a B-spline deformation with a B-spline, which is the most
-  favourable possible test. Real anatomical deformation is not B-spline shaped.
+- **Deformable registration has never been run against a clinical ground truth.** The
+  B-spline measurements above recover a B-spline deformation with a B-spline, which is the
+  most favourable possible test. Real anatomical deformation is not B-spline shaped.
+- `metric="mind"` was measured on nine public brain MR/CT pairs against *known, synthetic*
+  deformations applied to real images — 3D T1 only, no T2/FLAIR, no tumour change.
 
 One case is not a validation. Check the residual against your own tolerance.
 
@@ -578,7 +651,9 @@ One case is not a validation. Check the residual against your own tolerance.
 | Result differs between runs | ITK reduces the metric in thread completion order. Pin to one thread |
 | Registration returns something worse than doing nothing | If using `optimizer="gradient_descent"` on rigid, switch to the default |
 | `ImportError: backend='torch' needs PyTorch` | `pip install "pydicomrt[gpu]"` |
-| `torch.OutOfMemoryError` from `backend="torch"` | The finest pyramid level is too big for the card. Coarsen it with `isotropic_resample=True, resolution_staging=(8, 4, 1.5)` |
+| `torch.OutOfMemoryError` from `backend="torch"` | The finest pyramid level is too big for the card. Coarsen it with `isotropic_resample=True, resolution_staging=(8, 4, 1.5)` (`(6, 3, 1.5)` for `metric="mind"`) |
+| `metric='mind' runs on backend='torch' only` | Add `backend="torch"`; MIND has no SimpleITK implementation |
+| MR registered to CT is distorted, several mm of motion where none should be | The default intensity metric on a multimodal pair. Use `metric="mind"` |
 
 ### Output looks shifted or stretched
 

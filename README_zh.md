@@ -149,6 +149,7 @@ python example/02_rigid_registration_to_reg.py
 python example/03_deformable_registration_to_reg.py
 python example/03_deformable_registration_to_reg.py --gpu   # 用 PyTorch 跑 demons；需安裝 [gpu]
 python example/04_rtdose.py
+python example/05_mr_to_ct_deformable.py                    # MR -> CT，metric="mind"；需安裝 [gpu]
 ```
 
 ### 從 3D 遮罩建立 RTSTRUCT，再讀回來
@@ -237,6 +238,9 @@ moving_rigid = sitk.Resample(
 _, deformable_transform, displacement_field = demons_registration(fixed_image, moving_rigid)
 # 用 GPU 跑（需先 `pip install "pydicomrt[gpu]"`）—— 結果與回傳值都相同：
 # demons_registration(fixed_image, moving_rigid, backend="torch")
+# MR -> CT：demons 比較亮度，不同模態的亮度不對應，所以改比 MIND 描述子
+# （重採樣後的 MR 用 0 補邊，不是 -1000）：
+# demons_registration(ct_image, mr_on_ct, backend="torch", metric="mind", default_value=0.0)
 
 reg_ds = (
     DeformableSpatialRegistrationBuilder(fixed_series)
@@ -302,6 +306,9 @@ dose_image = get_dose_image(dose_ds)     # 轉回 sitk，已套用 DoseGridScali
   `sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(1)`。
 - **只有軸向掃描做過端到端驗證。** 傾斜與非等向的幾何處理已實作並有單元測試，
   但尚未在真實的斜向檢查上跑過。
+- **預設的 demons 只適用同模態。** 它比較的是亮度；在腦部 MR/CT 配對上，它會在沒有任何
+  移動的地方把腦移動 9 mm。MR → CT 請用 `metric="mind"` —— 這是在九組公開腦部配對上以已知的
+  合成形變量測的，不是與臨床標準答案比對。見使用指南〈MR 對 CT〉。
 
 原本列在這裡的兩項落差都已解決，而且兩次都先被寫上了聽起來合理的解釋。
 上下方向的誤差曾歸因於 CBCT 視野受限，真正的原因是 optimizer 跑離了正確位置；
