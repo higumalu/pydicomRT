@@ -48,10 +48,10 @@ wheel.packages = ["src/pydicomrt"]
 wheel.py-api = "py3"
 cmake.build-type = "Release"
 
-# Wheels: .github/workflows/wheels.yml. The library has no Python ABI, so one build per platform
-# (any one Python) yields a py3-none wheel for all of them. A missing compiler fails the build
-# rather than shipping a numpy-only wheel, and the test proves the library loads and agrees with
-# the numpy implementation.
+# Wheels: .github/workflows/publish-pypi.yml. The library has no Python ABI, so one build per
+# platform (any one Python) yields a py3-none wheel for all of them. A missing compiler fails the
+# build rather than shipping a numpy-only wheel, and the test proves the library loads and agrees
+# with the numpy implementation.
 [tool.cibuildwheel]
 build = "cp311-*"
 skip = "*-musllinux_*"  # SimpleITK and opencv publish no musllinux wheels to test against

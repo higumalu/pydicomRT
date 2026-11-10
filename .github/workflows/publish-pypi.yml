@@ -5,17 +5,19 @@
 # Not built: Windows on ARM and musl Linux. SimpleITK and opencv-python publish no wheels there, so
 # pydicomrt could not be installed on them anyway; the sdist covers anything else.
 #
-# Releasing: push a tag `vX.Y.Z` matching the version in pyproject.toml. The publish job uses PyPI
-# trusted publishing -- register this repository, workflow `wheels.yml` and environment `pypi` as a
-# trusted publisher on the PyPI project once, and no token is needed.
-name: wheels
+# Releasing: merge into main with a new version in pyproject.toml. Every push to main builds and
+# tests the wheels, and the publish job uploads them only if PyPI does not have that version yet, so
+# a merge that keeps the version releases nothing. Pull requests into main run the same builds
+# without publishing. PyPI trusts this file by name (trusted publishing, environment `pypi`): keep
+# the filename, or register the new one on PyPI.
+name: publish-pypi
 
 on:
-  workflow_dispatch:
   push:
-    tags: ["v*"]
+    branches: [main]
   pull_request:
-    paths: ["csrc/**", "CMakeLists.txt", "pyproject.toml", ".github/workflows/wheels.yml"]
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
   wheels:
@@ -70,7 +72,7 @@ jobs:
           path: dist/*.tar.gz
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [wheels, python-versions, sdist]
     runs-on: ubuntu-latest
     environment: pypi
@@ -83,3 +85,6 @@ jobs:
           merge-multiple: true
           path: dist
       - uses: pypa/gh-action-pypi-publish@v1.14.3
+        with:
+          # An unchanged version is already on PyPI: skip it instead of failing the run.
+          skip-existing: true

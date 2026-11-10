@@ -36,9 +36,10 @@ src/pydicomrt/
 csrc/       rigid_core.cpp: the C++ core of the default rigid, a plain C ABI shared library
             built by CMakeLists.txt (scikit-build-core) into pydicomrt/reg/method/ and loaded
             through ctypes, so wheels are py3-none-<platform>: one per platform serves every
-            Python. .github/workflows/wheels.yml builds them with cibuildwheel and publishes
-            to PyPI on a `v*` tag (trusted publishing). Releases go through it, not a local
-            build, which would ship only this machine's platform.
+            Python. .github/workflows/publish-pypi.yml builds them with cibuildwheel on every
+            PR into and push to main, and publishes to PyPI when main has a version PyPI lacks
+            -- so releasing is bumping `version` in pyproject.toml and merging. Releases go
+            through it, not a local build, which would ship only this machine's platform.
 test/
   synthetic.py        in-memory DICOM/phantom builders (no patient data)
   conftest.py         fixtures; pins SimpleITK to one thread
