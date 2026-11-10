@@ -30,8 +30,24 @@ cd pydicomRT
 pip install -e ".[dev]"
 ```
 
+The wheels include a small compiled C++ library, the inner loops of `rigid_registration`.
+Installing from source builds it, which needs a C++17 compiler (CMake is fetched
+automatically). Without a compiler the install still succeeds and `rigid_registration` runs on
+numpy instead, about ten times slower.
+
 Python ≥ 3.10, with `pydicom`, `numpy`, `SimpleITK`, `opencv-python`, `scipy`. The library
 is written against pydicom 3.
+
+GPU-accelerated demons is an optional extra, left out by default because PyTorch is a
+multi-gigabyte install:
+
+```bash
+pip install "pydicomrt[gpu]"
+```
+
+Then `demons_registration(..., backend="torch")` — about ten times faster than 24 CPU threads
+on a 22 M-voxel CT, with the same result. Nothing imports torch unless you ask for that
+backend. See [the user guide](docs/user-guide.md#demons-on-a-gpu).
 
 ---
 
@@ -142,7 +158,9 @@ the snippets below are taken from them.
 python example/01_rtstruct_from_mask.py
 python example/02_rigid_registration_to_reg.py
 python example/03_deformable_registration_to_reg.py
+python example/03_deformable_registration_to_reg.py --gpu   # demons on PyTorch; needs [gpu]
 python example/04_rtdose.py
+python example/05_mr_to_ct_deformable.py                    # MR -> CT with metric="mind"; needs [gpu]
 ```
 
 ### RTSTRUCT from a 3D mask, and back
@@ -229,6 +247,11 @@ moving_rigid = sitk.Resample(
 )
 
 _, deformable_transform, displacement_field = demons_registration(fixed_image, moving_rigid)
+# on a GPU, after `pip install "pydicomrt[gpu]"` -- same result, same return values:
+# demons_registration(fixed_image, moving_rigid, backend="torch")
+# MR -> CT: demons compares intensities, which differ between modalities, so compare MIND
+# descriptors instead (pad the resampled MR with 0, not -1000):
+# demons_registration(ct_image, mr_on_ct, backend="torch", metric="mind", default_value=0.0)
 
 reg_ds = (
     DeformableSpatialRegistrationBuilder(fixed_series)
@@ -271,34 +294,38 @@ rather than a claim.
 
 - Series loading matches SimpleITK's own GDCM reader exactly — geometry and voxel values.
 - `get_spatial_registrations` reads the TPS registration correctly, in the documented direction.
-- `rigid_registration` reproduces the clinical registration to 7.5 mm overall, with the
-  superior-inferior axis — the one that used to be worst — under 1 mm.
+- `rigid_registration` reproduces the clinical registration to 5.1 mm overall.
 
-Measured offsets from the TPS transform, in mm, as `(x, y, z)`, single-threaded:
+Measured against elastix's default rigid (mean error, mm). The pelvis row is the offset from
+the TPS transform; the brain rows use public data (RIRE, SynthRAD2023), see
+[the user guide](docs/user-guide.md#rigid):
 
-| `optimizer=` | offset | distance | time |
-|---|---|---|---|
-| `"regular_step"` (default) | `(+2.8, −7.0, −0.9)` | **7.5** | ~9 min |
-| `"gradient_descent"` | `(+1.4, −8.0, −36.7)` | 37.5 | ~1 min |
+| | `rigid_registration` | elastix |
+|---|---|---|
+| Pelvis CT/CBCT, offset `(x, y, z)` | `(+1.6, −4.7, −1.1)`, **5.1** | 16.7, 16 of it in z |
+| RIRE brain MR → CT, fiducial gold standard | 1.38 | 1.32 |
+| RIRE, MR moved by up to ±10°, ±20 mm | 1.24 | 1.35 |
+| SynthRAD2023 brain MR → CT | 0.53 | 1.00 |
 
-`"gradient_descent"` can take an estimated first step, overshoot into a flat region, and
-have its convergence window then report success — returning an alignment *worse than its own
-starting point* without raising anything. `"regular_step"` shrinks its step whenever the
-gradient reverses, so it cannot run away. The default is the slow, reliable one; the fast
-path stays selectable for previews and pipelines that re-run often.
+It takes about 15 s on the pelvis pair single-threaded, and about 1 s on a brain MR/CT with
+8 threads. Its answer does not depend on the thread count.
 
 **Known gaps:**
 
-- **The remaining ~7 mm is almost entirely anterior-posterior, and is not obviously the
-  library's error.** Sweeping y around the clinical answer shows full-field-of-view mutual
-  information peaking about 10 mm away from it — on this pair, the metric and the TPS
+- **The remaining ~5 mm is mostly anterior-posterior, and is not obviously the library's
+  error.** Sweeping y around the clinical answer shows full-field-of-view mutual
+  information peaking away from it — on this pair, the metric and the TPS
   genuinely disagree. Narrowing it would mean restricting the metric to an ROI, which is not
   implemented. One case is not a validation: check the residual against your own tolerance.
-- **Results are only reproducible single-threaded.** ITK reduces metric values in thread
-  completion order; thread count moved the answer by more than 15 mm on the real pair. Call
-  `sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(1)` when you need determinism.
+- **`algorithm="itk"` (the previous default) is only reproducible single-threaded.** ITK
+  reduces metric values in thread completion order; thread count moved the answer by more
+  than 15 mm on the real pair. The default algorithm does not have this problem.
 - **Only axial acquisitions have been run end to end.** Oblique and anisotropic geometry is
   implemented and unit-tested, but not exercised on a real study.
+- **Default demons is single-modality.** It compares intensities; on brain MR/CT pairs it
+  moves the brain by 9 mm where nothing moved. Use `metric="mind"` for MR → CT — measured on
+  nine public brain pairs against known synthetic deformations, not against a clinical ground
+  truth. See the user guide, "MR to CT".
 
 Two gaps that used to sit here have since closed, and both had been written up with a
 plausible explanation first. The superior-inferior error was blamed on the CBCT's limited

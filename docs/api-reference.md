@@ -1797,6 +1797,45 @@ Assemble the dataset.
 - **`ValueError`**
   If no registration has been added or the assembled dataset fails validation.
 
+#### `SpatialRegistrationBuilder.set_equipment`
+
+```python
+set_equipment(self: ~BuilderT, manufacturer: str = 'pydicomRT', model_name: str = 'pydicomRT', device_serial_number: str = 'pydicomRT', software_versions: str = 'pydicomRT 0.10.0') -> ~BuilderT
+```
+
+Set the Enhanced General Equipment attributes.
+
+**Parameters**
+
+- **`manufacturer`** — *str*
+  Manufacturer (0008,0070). Default `"pydicomRT"`.
+
+- **`model_name`** — *str*
+  Manufacturer's Model Name (0008,1090). Default `"pydicomRT"`.
+
+- **`device_serial_number`** — *str*
+  Device Serial Number (0018,1000). Default `"pydicomRT"`.
+
+- **`software_versions`** — *str*
+  Software Versions (0018,1020). Default `"pydicomRT <installed version>"`.
+
+**Returns**
+
+- **`SpatialRegistrationBuilder or DeformableSpatialRegistrationBuilder`**
+  self, so calls chain.
+
+**Raises**
+
+- **`ValueError`**
+  If a value is empty or longer than 64 characters.
+
+**Notes**
+
+All four are Type 1 in both registration IODs, and a TPS refuses the import if any
+is missing or empty. The defaults describe this library, which is what wrote the
+object; override them when a receiving system expects the site's own equipment.
+Arguments left out reset to their default.
+
 #### `SpatialRegistrationBuilder.set_instance_number`
 
 ```python
@@ -1970,6 +2009,45 @@ Assemble the Deformable Spatial Registration object.
 Unlike `SpatialRegistrationBuilder.build` there is no `include_identity`
 parameter. The deformable IOD carries the fixed frame in
 the top-level FrameOfReferenceUID rather than needing an identity item to mark it.
+
+#### `DeformableSpatialRegistrationBuilder.set_equipment`
+
+```python
+set_equipment(self: ~BuilderT, manufacturer: str = 'pydicomRT', model_name: str = 'pydicomRT', device_serial_number: str = 'pydicomRT', software_versions: str = 'pydicomRT 0.10.0') -> ~BuilderT
+```
+
+Set the Enhanced General Equipment attributes.
+
+**Parameters**
+
+- **`manufacturer`** — *str*
+  Manufacturer (0008,0070). Default `"pydicomRT"`.
+
+- **`model_name`** — *str*
+  Manufacturer's Model Name (0008,1090). Default `"pydicomRT"`.
+
+- **`device_serial_number`** — *str*
+  Device Serial Number (0018,1000). Default `"pydicomRT"`.
+
+- **`software_versions`** — *str*
+  Software Versions (0018,1020). Default `"pydicomRT <installed version>"`.
+
+**Returns**
+
+- **`SpatialRegistrationBuilder or DeformableSpatialRegistrationBuilder`**
+  self, so calls chain.
+
+**Raises**
+
+- **`ValueError`**
+  If a value is empty or longer than 64 characters.
+
+**Notes**
+
+All four are Type 1 in both registration IODs, and a TPS refuses the import if any
+is missing or empty. The defaults describe this library, which is what wrote the
+object; override them when a receiving system expects the site's own equipment.
+Arguments left out reset to their default.
 
 #### `DeformableSpatialRegistrationBuilder.set_instance_number`
 
@@ -2277,7 +2355,7 @@ Registration algorithms.
 ### `reg.method.demons_registration`
 
 ```python
-demons_registration(fixed_image: SimpleITK.SimpleITK.Image, moving_image: SimpleITK.SimpleITK.Image, resolution_staging: Sequence[int] = (8, 4, 1), iteration_staging: Sequence[int] = (10, 10, 10), isotropic_resample: bool = False, initial_displacement_field: Optional[SimpleITK.SimpleITK.Image] = None, regularization_kernel_mm: Union[float, Sequence[float]] = 1.5, smoothing_sigma_factor: float = 1.0, smoothing_sigmas: Union[float, Sequence[float], bool, NoneType] = False, default_value: Optional[float] = None, ncores: int = 1, interp_order: int = 2, verbose: bool = False) -> Tuple[SimpleITK.SimpleITK.Image, SimpleITK.SimpleITK.Transform, SimpleITK.SimpleITK.Image]
+demons_registration(fixed_image: SimpleITK.SimpleITK.Image, moving_image: SimpleITK.SimpleITK.Image, resolution_staging: Optional[Sequence[int]] = None, iteration_staging: Optional[Sequence[int]] = None, isotropic_resample: bool = False, initial_displacement_field: Optional[SimpleITK.SimpleITK.Image] = None, regularization_kernel_mm: Union[float, Sequence[float], NoneType] = None, smoothing_sigma_factor: Optional[float] = None, smoothing_sigmas: Union[float, Sequence[float], bool, NoneType] = False, default_value: Optional[float] = None, ncores: int = 1, interp_order: int = 2, verbose: bool = False, backend: str = 'simpleitk', device: Optional[str] = None, metric: str = 'intensity') -> Tuple[SimpleITK.SimpleITK.Image, SimpleITK.SimpleITK.Transform, SimpleITK.SimpleITK.Image]
 ```
 
 Deformable registration via Fast Symmetric-Forces Demons (SimpleITK) with multi-resolution strategy.
@@ -2288,6 +2366,11 @@ displacement-field transform to resample the moving image into the fixed image s
 Inputs may have different grids; moving data are sampled onto the fixed pyramid grid
 through the current transform at each level. This does not estimate a rigid alignment.
 
+Demons compares intensities by default, which is only meaningful when the same tissue has
+the same intensity in both images: CT to CT, CT to CBCT. For MR to CT use
+`metric="mind"` (with `backend="torch"`); the intensity metric produces several
+millimetres of motion that is not there.
+
 **Parameters**
 
 - **`fixed_image`** — *sitk.Image*
@@ -2296,13 +2379,16 @@ through the current transform at each level. This does not estimate a rigid alig
 - **`moving_image`** — *sitk.Image*
   Image to be warped into the fixed image space.
 
-- **`resolution_staging`** — *Sequence[int or float], default = (8, 4, 1)*
+- **`resolution_staging`** — *Sequence[int or float], optional*
   Pyramid schedule. Length of this sequence defines the number of pyramid levels.
+  `None` means (8, 4, 1) for `metric="intensity"` and (4, 2, 1) for `"mind"`.
   - If `isotropic_resample=False`: values are downsampling shrink factors (typically integers, e.g., [8, 4, 1]).
   - If `isotropic_resample=True`: values are target isotropic voxel sizes in millimeters (floats, e.g., [2.5, 1.0, 0.5]).
 
-- **`iteration_staging`** — *Sequence[int], default = (20, 20, 20)*
+- **`iteration_staging`** — *Sequence[int], optional*
   Number of iterations per pyramid level. Must match the length of `resolution_staging`.
+  `None` means (10, 10, 10) for `metric="intensity"` and (100, 100, 200) for
+  `"mind"`. Either way a level stops early once its updates become negligible.
 
 - **`isotropic_resample`** — *bool, default = False*
   If True, interpret `resolution_staging` as isotropic voxel sizes (mm); otherwise as shrink factors.
@@ -2311,13 +2397,15 @@ through the current transform at each level. This does not estimate a rigid alig
   Initial DVF (vector image). If provided, it overrides any `initial_transform` usage
   inside `multiscale_demons` and is resampled onto the fixed grid when needed.
 
-- **`regularization_kernel_mm`** — *float or Sequence[float], default = 1.0*
+- **`regularization_kernel_mm`** — *float or Sequence[float], optional*
   Standard deviation(s) in millimeters used by demons for smoothing the update and DVF.
   Scalar broadcasts to all axes; sequence length must be 1 or image dimension.
+  `None` means 1.5 for `metric="intensity"` and 3.0 for `"mind"`.
 
-- **`smoothing_sigma_factor`** — *float, default = 1.0*
+- **`smoothing_sigma_factor`** — *float, optional*
   Fallback factor to derive `smoothing_sigmas` per level if `smoothing_sigmas` is not provided.
   Each level's sigma = `resolution_staging[level] * smoothing_sigma_factor`.
+  `None` means 1.0 for `metric="intensity"` and 0.5 for `"mind"`.
 
 - **`smoothing_sigmas`** — *float or Sequence[float] or bool, default = False*
   Per-level Gaussian sigmas (in physical units, mm) used for image smoothing
@@ -2332,14 +2420,36 @@ through the current transform at each level. This does not estimate a rigid alig
   (min <= -1000), default to -1000.
 
 - **`ncores`** — *int, default = 1*
-  Number of threads for demons filter.
+  Number of threads for demons filter. Ignored by the torch backend.
 
 - **`interp_order`** — *int, default = sitk.sitkLinear*
   Interpolator for resampling (e.g., sitk.sitkNearestNeighbor, sitk.sitkLinear, sitk.sitkBSpline).
+  The torch backend interpolates linearly inside the registration and accepts only
+  `sitk.sitkLinear`.
 
 - **`verbose`** — *bool, default = False*
   If True and a global callback `deformable_registration_command_iteration` is defined,
-  prints per-iteration metric values.
+  prints per-iteration metric values. Ignored by the torch backend.
+
+- **`backend`** — *{"simpleitk", "torch"}, default = "simpleitk"*
+  Which implementation runs the demons iterations. `"torch"` runs the same algorithm
+  on PyTorch -- on a GPU when one is available -- and needs the optional dependency:
+  `pip install "pydicomrt[gpu]"`. It reproduces the SimpleITK field to within a few
+  hundredths of a millimetre and supports 3D images only. Everything else, including
+  the returned objects, is the same for both.
+
+- **`device`** — *str, optional*
+  PyTorch device for `backend="torch"`, e.g. `"cuda"`, `"cuda:1"` or `"cpu"`.
+  `None` uses CUDA when available and otherwise falls back to the CPU with a warning.
+  Must be `None` for the SimpleITK backend.
+
+- **`metric`** — *{"intensity", "mind"}, default = "intensity"*
+  What the demons force compares. `"intensity"` is ITK's demons: the intensity
+  difference, so single-modality only. `"mind"` compares MIND-SSC descriptors
+  (Heinrich et al., 2013) -- at every voxel, how alike the neighbouring patches are --
+  which depend on where the edges are and not on which side is brighter, so the images
+  may be of different modalities (MR to CT) and need no intensity normalisation.
+  `"mind"` needs `backend="torch"` and changes the defaults noted above; see Notes.
 
 **Returns**
 
@@ -2357,6 +2467,9 @@ through the current transform at each level. This does not estimate a rigid alig
 - **`ValueError`**
   On invalid arguments (length mismatches, non-positive values, dimension mismatch, etc.).
 
+- **`ImportError`**
+  If `backend="torch"` is requested and PyTorch is not installed.
+
 - **`RuntimeError`**
   If helper `multiscale_demons(...)` is not available in the current scope.
 
@@ -2366,13 +2479,31 @@ through the current transform at each level. This does not estimate a rigid alig
   moving pixel type after resampling.
 - Regularization sigmas are specified in *voxels* to SimpleITK; this function converts
   millimeter inputs to voxel units using the fixed image spacing.
+- GPU memory for `backend="torch"` grows linearly with the voxel count of the finest
+  pyramid level, at roughly 180 bytes per voxel: about 4.5 GB for 512 x 512 x 100. For a
+  volume that does not fit, make the finest level coarser -- e.g. `isotropic_resample=True`
+  with `resolution_staging=(8, 4, 1.5)` -- the returned field is still on the fixed grid.
+  Running out raises `torch.OutOfMemoryError` with an estimate.
+- Iterations are best spent at the finest level: on synthetic tests, raising the coarse
+  levels' counts made the result worse, raising the finest level's made it better.
+- `metric="mind"` carries one displacement field through all pyramid levels instead of
+  composing a refinement per level as ITK's multiscale scheme does, so it does not
+  reproduce any SimpleITK result. It needs about 360 bytes of device memory per voxel of
+  the finest level -- twice the intensity metric -- so register a planning CT at
+  1-1.5 mm (`isotropic_resample=True`, e.g. `resolution_staging=(6, 3, 1.5)`) rather
+  than at its native in-plane resolution. MIND sees edges, so the result is only as good
+  as the edges the two images share; on 2D MR series with 3-5 mm slices, motion along the
+  slice direction is mostly filled in by the regularisation.
+- Validated on public brain MR/CT pairs (SynthRAD2023) against known deformations only. A
+  deformable result between MR and CT also moves real anatomical change -- tumour growth,
+  oedema, resection cavities -- out of sight; review it before contouring on it.
 
 <a id="regmethodrigid-registration"></a>
 
 ### `reg.method.rigid_registration`
 
 ```python
-rigid_registration(fixed_image: SimpleITK.SimpleITK.Image, moving_image: SimpleITK.SimpleITK.Image, histogram_bins: int = 100, learning_rate: float = 2.0, iterations: int = 300, shrink_factors=(4, 2, 1), smoothing_sigmas=(2.0, 1.0, 0.0), optimizer: str = 'regular_step', relaxation_factor: float = 0.7, min_step_mm: float = 0.0001, convergence_minimum_value: float = 1e-06, convergence_window_size: int = 10, max_step_size_mm: float = 2.0) -> SimpleITK.SimpleITK.Transform
+rigid_registration(fixed_image: SimpleITK.SimpleITK.Image, moving_image: SimpleITK.SimpleITK.Image, histogram_bins: int = 100, learning_rate: float = 2.0, iterations: int = 300, shrink_factors=(4, 2, 1), smoothing_sigmas=(2.0, 1.0, 0.0), optimizer: str = 'regular_step', relaxation_factor: float = 0.7, min_step_mm: float = 0.0001, convergence_minimum_value: float = 1e-06, convergence_window_size: int = 10, max_step_size_mm: float = 2.0, algorithm: str = 'stochastic', backend: str = 'auto', seed: int = 0, threads=None) -> SimpleITK.SimpleITK.Transform
 ```
 
 Rigidly align a moving image to a fixed image.
@@ -2391,42 +2522,61 @@ scales.
   The image to align.
 
 - **`histogram_bins`** — *int, optional*
-  Bins for Mattes mutual information. Default 100.
+  itk only. Bins for Mattes mutual information. Default 100.
 
 - **`learning_rate`** — *float, optional*
-  Initial optimizer step. Default 2.0.
+  itk only. Initial optimizer step. Default 2.0.
 
 - **`iterations`** — *int, optional*
-  Maximum optimizer iterations per resolution level. Default 300.
+  itk only. Maximum optimizer iterations per resolution level. Default 300.
 
 - **`shrink_factors`** — *sequence of int or None, optional*
-  Downsampling factor per level, coarsest first. `None` gives a single-resolution
-  registration. Default `(4, 2, 1)`.
+  itk only. Downsampling factor per level, coarsest first. `None` gives a
+  single-resolution registration. Default `(4, 2, 1)`.
 
 - **`smoothing_sigmas`** — *sequence of float or None, optional*
-  Gaussian sigma in mm per level, matching `shrink_factors` element for element.
-  Default `(2.0, 1.0, 0.0)`.
+  itk only. Gaussian sigma in mm per level, matching `shrink_factors` element for
+  element. Default `(2.0, 1.0, 0.0)`.
 
 - **`optimizer`** — *{"regular_step", "gradient_descent"}, optional*
-  Default `"regular_step"`. See Notes -- the default is slower and much more
-  reliable.
+  itk only. Default `"regular_step"`. See Notes.
 
 - **`relaxation_factor`** — *float, optional*
-  regular_step only. The step is multiplied by this whenever the gradient direction
-  reverses. Default 0.7.
+  itk regular_step only. The step is multiplied by this whenever the gradient
+  direction reverses. Default 0.7.
 
 - **`min_step_mm`** — *float, optional*
-  regular_step only. Stop once the step falls below this. Default 1e-4.
+  itk regular_step only. Stop once the step falls below this. Default 1e-4.
 
 - **`convergence_minimum_value`** — *float, optional*
-  gradient_descent only. Default 1e-6.
+  itk gradient_descent only. Default 1e-6.
 
 - **`convergence_window_size`** — *int, optional*
-  gradient_descent only. Default 10.
+  itk gradient_descent only. Default 10.
 
 - **`max_step_size_mm`** — *float, optional*
-  gradient_descent only. Upper bound on a single step in mm; 0.0 leaves it
+  itk gradient_descent only. Upper bound on a single step in mm; 0.0 leaves it
   unbounded. Default 2.0.
+
+- **`algorithm`** — *{"stochastic", "itk"}, optional*
+  `"stochastic"` (default) is the library's own implementation, with a fixed
+  schedule -- see Notes. `"itk"` is SimpleITK's `ImageRegistrationMethod`,
+  configured by the parameters marked "itk only", which `"stochastic"` ignores.
+
+- **`backend`** — *{"auto", "numpy", "cpp"}, optional*
+  stochastic only. `"cpp"` runs the inner loops in the compiled core that ships
+  with the package, about ten times faster; `"numpy"` runs them in numpy. Both use
+  the same random points; rounding can still tip single points into another histogram
+  bin, which a thousand stochastic steps carry forward, so their answers differ by up
+  to about 0.2 mm. `"auto"` (default) uses the compiled core, or numpy in an
+  installation built from source without a C++ compiler.
+
+- **`seed`** — *int, optional*
+  stochastic only. Seed of the random sample points. Default 0.
+
+- **`threads`** — *int or None, optional*
+  stochastic with the compiled core only. `None` (default) takes SimpleITK's global
+  default thread count. The answer does not depend on it.
 
 **Returns**
 
@@ -2439,8 +2589,11 @@ scales.
 **Raises**
 
 - **`ValueError`**
-  If `shrink_factors` and `smoothing_sigmas` differ in length, or the optimizer
-  name is unknown.
+  If the algorithm, backend or optimizer name is unknown, an image is not 3D
+  (stochastic), or `shrink_factors` and `smoothing_sigmas` differ in length (itk).
+
+- **`ImportError`**
+  If `backend="cpp"` and this installation has no compiled core.
 
 **See Also**
 
@@ -2450,26 +2603,26 @@ scales.
 
 **Notes**
 
-`"gradient_descent"` can return a *worse* alignment than its own initialisation and
-still report convergence: it takes an estimated first step, overshoots into a flat
-region, and the convergence window then sees the metric stop changing. On a real
-CT/CBCT pair it finished 37 mm from the clinical registration, almost all of it
-superior-inferior.
+`"stochastic"` follows elastix's strategy: Mattes mutual information on fresh random
+points every iteration, adaptive stochastic gradient ascent over a four-level smoothing
+pyramid, then a regular-step ascent on one fixed set of 500 000 points, so the answer is
+the optimum of a single estimate rather than wherever the stochastic walk stopped. It
+uses the exact derivative of the linear interpolant. Mean error in mm, elastix's default
+rigid in brackets: 1.38 (1.32) against the RIRE fiducial gold standard, 1.24 (1.35) from
+ten starts moved by up to 10 degrees and 20 mm, 0.53 (1.00) on nine SynthRAD2023 brain
+MR/CT pairs, and 5.1 (16.7) from the TPS registration of one pelvis CT/CBCT pair. Its
+answer does not depend on the thread count. It starts from the geometric centres
+aligned, as `CenteredTransformInitializer(GEOMETRY)` does.
 
-`"regular_step"` shrinks its step by `relaxation_factor` whenever the gradient
-reverses, so it cannot run away from a good position. On the same pair it finished
-7.5 mm out, with the residual concentrated where the metric itself disagrees with the
-clinical answer. It costs roughly 8x the wall time -- about 9 minutes rather than 1 on
-full-size volumes -- which is why the fast path is still selectable.
+`"itk"` is the previous default. Its precomputed image gradient disagrees with the
+linear interpolant on thick slices, which walked it 30 mm away from a correct start on
+a 4 mm MR; on the pelvis pair it took about nine minutes single-threaded for 7.5 mm. It
+is only bit-reproducible single-threaded -- ITK reduces the metric in thread-completion
+order. Its `optimizer="gradient_descent"` can return an alignment worse than its own
+initialisation and still report convergence.
 
-Registration is only bit-reproducible single-threaded: ITK reduces the metric in
-thread-completion order, and on that real pair the thread count moved the answer by
-more than 15 mm. Call
-`sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(1)` when you need determinism.
-
-Starting position is estimated with `CenteredTransformInitializer` on the two
-images' geometry. Resampling both onto a common grid beforehand destroys that estimate
--- there is then nothing to centre -- so register in the images' own grids.
+Both register in the images' own grids: resampling both onto a common grid beforehand
+leaves no geometry to initialise from.
 
 **Examples**
 
@@ -2479,11 +2632,11 @@ images' geometry. Resampling both onto a common grid beforehand destroys that es
 ...     moving_image, fixed_image, transform, sitk.sitkLinear, -1000.0)
 ```
 
-A quick preview, at the cost of reliability:
+The previous SimpleITK algorithm:
 
 ```python
 >>> transform = rigid_registration(
-...     fixed_image, moving_image, optimizer="gradient_descent")
+...     fixed_image, moving_image, algorithm="itk")
 ```
 
 <a id="regmethodbspline-registration"></a>

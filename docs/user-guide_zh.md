@@ -34,6 +34,21 @@ pip install pydicomrt
 `file_meta` 的 transfer syntax 取得編碼方式，而 pydicom 2 需要的
 `is_little_endian` / `is_implicit_VR` 屬性已被 pydicom 4 移除。
 
+GPU 加速的 demons 註冊是選用的額外套件。PyTorch 安裝動輒數 GB，所以預設不安裝，而且除非
+指定 `backend="torch"`，否則任何地方都不會 import 它：
+
+```bash
+pip install "pydicomrt[gpu]"
+```
+
+若 pip 預設的 PyTorch wheel 在你的平台上只有 CPU 版，請先自行安裝 CUDA 版的 PyTorch（見
+pytorch.org）；這個 extra 只是把 `torch` 加進需求。
+
+wheel 內含一個小型的 C++ 編譯函式庫，是 `rigid_registration` 預設演算法的內層迴圈。它本身
+沒有任何依賴，所以不是額外套件，每次安裝都會有。從原始碼安裝（`pip install -e .`，或沒有
+現成 wheel 的平台）時會編譯它，需要 C++17 編譯器；CMake 會自動下載。沒有編譯器也能裝好，
+`rigid_registration` 改用 numpy 跑同一個演算法，約慢十倍。
+
 存檔一律使用 pydicom 3 的寫法：
 
 ```python
@@ -207,6 +222,15 @@ builder 在寫入前會驗證矩陣：16 個元素、最後一列是 `[0, 0, 0, 
 建構子這邊則要求所有 reference 影像共用同一個 Frame of Reference，所以由兩個 study 拼起來的
 序列 list 在還沒加入任何 registration 前就會被擋下。
 
+兩種 REG 物件都帶有四個 Type 1 的設備欄位 —— Manufacturer、Manufacturer's Model Name、
+Device Serial Number 與 Software Versions —— 只要有一個缺漏或為空，TPS 就會拒絕匯入。它們的
+預設值是 `pydicomRT`（Software Versions 另外記錄安裝的版本）。若接收端系統要求填院內自己的
+值，可用 `set_equipment()` 設定；沒傳入的參數維持預設值：
+
+```python
+builder.set_equipment(manufacturer="My Hospital", device_serial_number="SN-001")
+```
+
 ### 可變形註冊並匯出成 DICOM REG
 
 Deformable REG 的方向是 fixed → moving。對 rigid 後接 deformable 的流程，grid 放 residual
@@ -374,25 +398,150 @@ CT 是 single-frame IOD，所以 `check_ct_iod` 一次檢查一張切片。
 
 | | 適用時機 | 成本 |
 |---|---|---|
-| `rigid_registration` | 只需要位置與方向 | 完整 CT/CBCT 單執行緒約 9 分鐘 |
-| `demons_registration` | 可變形，預設首選 | 快，且對參數寬容 |
+| `rigid_registration` | 只需要位置與方向 | 腦部 MR/CT 8 執行緒約 1 秒 |
+| `demons_registration` | 可變形，預設首選 —— 同模態（CT↔CT、CT↔CBCT） | 快，且對參數寬容 |
+| `demons_registration(metric="mind")` | 可變形，不同模態（MR→CT） | GPU 上數秒；需要 `[gpu]` |
 | `bspline_registration` | 可變形，需要參數化轉換時 | 同等精度下約為 demons 的 40 倍 |
 | `demons_with_soft_mask` | 可變形，限制在特定結構內 | 同 demons |
 
 **可變形註冊請優先用 demons。** 在還原 2.11 mm 形變的合成假體上，demons 為 0.80 mm／0.4 秒，
 B-spline 為 0.82 mm／17 秒。當你確實需要參數化轉換 —— 可儲存、可操作的控制點 —— 而不是位移
-場時，才選 B-spline。
+場時，才選 B-spline。demons 也可以在 GPU 上跑，見下文。
+
+**demons 比較的是亮度**，所以預設只在同一組織在兩張影像亮度相同時才成立。MR 對 CT 請用
+`metric="mind"`，見 [MR 對 CT](#mr-對-ctmetricmind)。
 
 ### 剛體
 
-預設 optimizer 是 `"regular_step"`，梯度反向時會縮小步長，因此不會從一個好位置走開。
-`"gradient_descent"` 也可用，速度約快九倍，但它可能回傳比自己初始化還差的結果卻仍宣稱收斂：
-在真實 CT/CBCT 上與 TPS 註冊比對，它是 37.5 mm，而預設值是 7.5 mm。把它當預覽用，不是等
-價替代品。
+```python
+transform = rigid_registration(fixed_image, moving_image)
+```
 
-註冊只有在單執行緒下才逐位元可重現 —— ITK 依執行緒完成順序歸約 metric，在那組真實資料上，
-執行緒數會讓答案差超過 15 mm。需要決定性結果時請呼叫
-`sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(1)`。
+本套件自己實作的 elastix 策略：每次迭代在新的隨機點上計算 Mattes 互資訊，在四層平滑金字塔上
+做自適應隨機梯度上升，最後在一組固定的 50 萬個點上做確定性的收尾。它用的是線性內插本身的精確
+導數，排程是固定的。
+
+與 elastix 預設的 rigid 比較（平均誤差，mm；超過 5 mm 算失敗）：
+
+| | `rigid_registration` | elastix |
+|---|---:|---:|
+| RIRE 腦部 MR → CT，骨釘真值（6 個 MR 序列） | 1.38 | 1.32 |
+| RIRE，同一次檢查 T1/T2/PD 的一致性（16 位病人） | 1.33 | 1.31 |
+| RIRE，MR header 隨機移動最多 ±10°、±20 mm（10 個起點） | 1.24 | 1.35 |
+| SynthRAD2023 腦部 MR → CT，header 移動（9 組） | 0.53 | 1.00 |
+| 骨盆 CT/CBCT，對 TPS 註冊（1 組） | 5.1 | 16.7 |
+| 時間，腦部 MR/CT，8 執行緒 | 約 1.2 秒 | 約 1.2 秒 |
+
+兩者都在同一位 RIRE 病人上失敗（該次檢查的序列之間相差約 8 mm），比較可能是序列之間病人真的
+有移動。骨盆資料上，單執行緒約 15 秒。
+
+- `backend`：`"auto"`（預設）使用編譯核心；若是在沒有 C++ 編譯器的環境從原始碼安裝，則用
+  numpy，約慢十倍。兩者抽到相同的隨機點；但捨入誤差偶爾會讓個別點落到相鄰的直方圖 bin，
+  隨機步驟會把它延續下去，所以兩個後端的答案最多相差約 0.2 mm。
+- `seed`：隨機點的種子。骨盆資料上種子 0–2 的結果是 5.09–5.16 mm。
+- `threads`：編譯核心的執行緒數，`None` 時取 SimpleITK 的全域預設值。答案與它無關。
+
+`algorithm="itk"` 保留先前的預設：SimpleITK 的 `ImageRegistrationMethod`，以及它的參數
+（`histogram_bins`、`optimizer`、`shrink_factors` 等）。它只有在單執行緒下才逐位元可重現，
+因為 ITK 依執行緒完成順序歸約 metric。
+
+### 在 GPU 上跑 demons
+
+`backend="torch"` 用 PyTorch 跑同一個多解析度 demons，有 GPU 時就用 GPU。需要安裝 `[gpu]`
+extra（見[安裝](#安裝)），回傳的三個物件和原本相同：
+
+```python
+registered, transform, field = demons_registration(
+    fixed_image, moving_rigid, backend="torch"       # device="cuda:1" 可指定顯卡
+)
+
+# 或透過 pipeline
+registration_pipeline(fixed_image, moving_image,
+                      deformable_kwargs={"backend": "torch"})
+```
+
+它是 ITK filter 的移植，而不是照概念重寫 —— 邊界處理、平滑 kernel 和提前停止都依照 ITK
+原始碼 —— 測試會在非等向、旋轉、moving 在不同格點等情況下和 SimpleITK backend 比對，兩者
+差距在千分之一毫米等級。在一組真實的 418 × 417 × 126 定位 CT（2200 萬 voxel；RTX 5090、
+24 核 CPU）上，使用預設參數：
+
+| backend | 時間 |
+|---|---|
+| `"simpleitk"`，單執行緒（`ncores` 預設值） | 約 63 秒 |
+| `"simpleitk"`，`ncores=24` | 約 8 秒 |
+| `"torch"`，CUDA | 約 0.7 秒 |
+
+兩者的時間都隨迭代次數線性增加，所以迭代調高後倍數不變。
+
+- **記憶體**取決於金字塔最細一層，每個 voxel 約 180 bytes —— 那組 2200 萬 voxel 的 CT 約
+  4 GB。1024 × 1024 × 200 的影像在全解析度下需要約 39 GB；改用
+  `isotropic_resample=True, resolution_staging=(8, 4, 1.5)` 後只用 5.2 GB、3.7 秒（24 執行緒
+  要 36.7 秒），準確度相同，回傳的形變場仍在 fixed 格點上。記憶體不足時會丟出附帶預估值的
+  `torch.OutOfMemoryError`。
+- **多出來的迭代要加在最細一層。** 在真實 CT 加上已知合成形變的測試裡，每一層都加會變差 ——
+  預設 `(10, 10, 10)` 是 1.15 mm，`(100, 100, 100)` 是 4.45 mm —— 只加最後一層則變好：
+  `(10, 10, 100)` 是 0.55 mm。兩個 backend 都是如此，GPU 只是讓長排程變得負擔得起。
+- **影像邊緣在兩個 backend 上都不穩定。** 解剖被影像邊界截斷的地方，demons 是混沌的：輸入
+  只要擾動千分之一 HU，SimpleITK 在那裡的結果就會移動數毫米。兩個 backend 在那裡的差異也是
+  這個量級；影像內部則一致。
+- 同一個裝置上重複執行，結果完全相同。torch backend 只支援 3D、只用線性內插，並忽略
+  `ncores` 和 `verbose`。沒有 CUDA 裝置時會在 CPU 上執行並記錄警告。
+
+### MR 對 CT：`metric="mind"`
+
+demons 的力是兩張影像的亮度差，這在 MR 和 CT 之間沒有意義 —— 骨頭在一邊亮、在另一邊暗。在
+沒有形變的腦部 MR/CT 配對上，預設 metric 會把腦平均移動 9 mm；`registration_pipeline` 的
+可變形階段就是 demons，所以也一樣。`metric="mind"` 把亮度換成 MIND-SSC 描述子（Heinrich
+et al., 2013）：每個體素周圍的小區塊彼此有多像。這取決於邊在哪裡，而不是哪一側比較亮，
+所以只要 MR 和 CT 都看得到同一條邊界，描述子就相同。
+
+```python
+rigid = rigid_registration(ct_image, mr_image)            # 互資訊：MR 沒問題
+mr_on_ct = sitk.Resample(mr_image, ct_image, rigid, sitk.sitkLinear, 0.0)  # MR 用 0 補邊
+
+registered, transform, field = demons_registration(
+    ct_image, mr_on_ct, backend="torch", metric="mind", default_value=0.0,
+)
+
+# 或透過 pipeline
+registration_pipeline(ct_image, mr_image, default_value=0.0,
+                      deformable_kwargs={"backend": "torch", "metric": "mind"})
+```
+
+`example/05_mr_to_ct_deformable.py` 用一組已知答案的合成配對完整跑一次，並寫出 Deformable
+REG；匯出方式和 CT 對 CT 相同。
+
+- **需要 `backend="torch"`**（`[gpu]` 這個 extra；CUDA 顯卡不是必要的，CPU 也能跑，只是慢）。
+- **直接輸入原始數值。** MIND 不受增益與偏移影響，CT 值和 MR 訊號照原樣傳入即可。MR 配對
+  不要在 pipeline 設 `window_clip`：它會把同一個窗位套到兩張影像上，CT 的窗位會把 MR 壓平。
+- **預設值不同**：`resolution_staging=(4, 2, 1)`、`iteration_staging=(100, 100, 200)`、
+  `regularization_kernel_mm=3.0`、`smoothing_sigma_factor=0.5`。intensity 的預設值
+  （(8, 4, 1)、1.5 mm）在這個 metric 下各自會讓憑空產生的位移升到 2–4 mm。明確傳入的值則照原樣使用。
+- **記憶體**：最細一層每個體素約 360 bytes，是 intensity metric 的兩倍。原始解析度的定位
+  CT 請在 1–1.5 mm 下註冊：`isotropic_resample=True, resolution_staging=(6, 3, 1.5)`。回傳的
+  場仍在 fixed 的格點上。
+- 它不會重現 SimpleITK 的結果：它讓同一個場貫穿所有金字塔層級，而不是每層組合一個修正量，
+  這樣較細的層級才能修正較粗層級的錯。
+
+在九組公開的腦部 MR/CT 配對上量測（SynthRAD2023：放療定位 CT 與 3D T1，主辦方只做了剛體
+對位），已知形變加在 CT 上：
+
+| | 未形變配對上腦的移動量 | 已知 2.7 mm 形變的誤差 | 時間 |
+|---|---|---|---|
+| 不做可變形 | 0 | 2.74 mm | — |
+| `metric="intensity"` | 9.1 mm | 9.3 mm | 約 1 秒 |
+| `bspline_registration(metric="mutual_information")`（單例） | 6.6 mm | 6.6 mm | 13 分鐘 |
+| `metric="mind"` | 0.62 mm | 0.86 mm | 約 9 秒 |
+
+互資訊適用於剛體註冊 —— 只有六個參數 —— 但密集或 B-spline 形變可以靠扭曲腦外的結構把它
+拉高，而它真的會這麼做。未形變配對上的 0.62 mm 有一部分是真的（MR 失真、姿勢；這些配對只做
+過剛體對位）：在直接由 CT 做出、完全沒有殘差的合成 MR 上，`"mind"` 讓腦移動約 0.1 mm。
+
+**腦部標靶通常只要剛體就夠了。** 在這些量測中，可變形階段讓腦移動的量遠小於 1 mm；真正的
+形變在頸部和顱底，8° 的頸部屈曲只還原了約三分之一。而且可變形結果會把真實的解剖變化 ——
+腫瘤長大、水腫、術後腔室 —— 一起「對齊」掉。在上面畫輪廓之前請先檢查。MIND 看的是邊，所以
+層厚 3–5 mm 的 2D MR 序列在層面方向上提供的資訊很少；請用 3D T1 對 CT 註冊，同一次 MR 檢查的
+其他序列再透過它們與該 T1 的剛體對位帶過來。
 
 ### B-spline
 
@@ -436,11 +585,13 @@ B-spline 為 0.82 mm／17 秒。當你確實需要參數化轉換 —— 可儲�
 形變比對得出的。
 
 - 序列載入與 SimpleITK 自己的 GDCM reader 完全一致，包含幾何與體素值。
-- `rigid_registration` 整體重現臨床註冊到 7.5 mm，其中上下軸小於 1 mm。殘差主要在前後軸，
-  該處全視野互資訊的峰值距離臨床答案約 10 mm —— 也就是說在這組資料上，metric 與 TPS 是真的
-  不一致。
-- **可變形註冊從未在真實臨床資料上驗證過。** 上面那些 B-spline 數字是用 B-spline 還原
+- `rigid_registration` 整體重現臨床註冊到 5.1 mm，`(+1.6, −4.7, −1.1)` mm。殘差主要在前後軸，
+  該處全視野互資訊的峰值偏離臨床答案 —— 也就是說在這組資料上，metric 與 TPS 是真的不一致。
+  另外在公開的腦部 MR/CT 上與骨釘真值比對過（RIRE：一位病人，1990 年代 4 mm 切片）。
+- **可變形註冊從未與臨床標準答案比對過。** 上面那些 B-spline 數字是用 B-spline 還原
   B-spline 形變，是最有利的測試條件。真實的解剖形變並不是 B-spline 形狀的。
+- `metric="mind"` 是在九組公開的腦部 MR/CT 配對上，以加在真實影像上的*已知合成*形變量測
+  的 —— 只有 3D T1，沒有 T2/FLAIR，也沒有腫瘤變化。
 
 一組資料不構成驗證。請用你自己的容許值去檢查殘差。
 
@@ -483,8 +634,13 @@ B-spline 為 0.82 mm／17 秒。當你確實需要參數化轉換 —— 可儲�
 | 警告 "the fit is underdetermined" | B-spline 的係數多於 metric 取樣點。調高 `sampling_rate`、加粗 `initial_grid_spacing`，或去掉最粗那層 |
 | `optimizer must be one of (...)` | 檢查拼字，清單在 `bspline.OPTIMIZERS` |
 | `optimizer='LBFGSB' cannot be combined with grid_scale_factors` | 傳入 `grid_scale_factors=None` |
-| 每次跑結果都不同 | ITK 依執行緒完成順序歸約 metric。固定為單執行緒 |
-| 註冊結果比什麼都不做還糟 | 若剛體用了 `optimizer="gradient_descent"`，改回預設值 |
+| 每次跑結果都不同 | 用 `algorithm="itk"` 時，ITK 依執行緒完成順序歸約 metric：固定為單執行緒。預設演算法與執行緒數無關；檢查 `seed` |
+| 註冊結果比什麼都不做還糟 | 若用了 `algorithm="itk", optimizer="gradient_descent"`，改回預設值 |
+| `ImportError: backend='torch' needs PyTorch` | `pip install "pydicomrt[gpu]"` |
+| `ImportError: backend='cpp' needs the compiled core` | pydicomrt 是在沒有 C++ 編譯器的環境從原始碼安裝的。改裝 wheel，或在有 C++17 編譯器的環境重裝；在那之前 `backend="auto"` 會用 numpy |
+| `backend="torch"` 丟出 `torch.OutOfMemoryError` | 最細一層對這張顯卡太大。用 `isotropic_resample=True, resolution_staging=(8, 4, 1.5)` 把它變粗（`metric="mind"` 用 `(6, 3, 1.5)`） |
+| `metric='mind' runs on backend='torch' only` | 加上 `backend="torch"`；MIND 沒有 SimpleITK 的實作 |
+| MR 對到 CT 後變形扭曲，不該動的地方動了數毫米 | 在多模態配對上用了預設的 intensity metric。改用 `metric="mind"` |
 
 ### 輸出看起來位移或變形
 

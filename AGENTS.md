@@ -22,18 +22,32 @@ src/pydicomrt/
   reg/      Registration: two REG builders/parsers, algorithms, pipeline
     type_transform.py  sitk transform <-> DICOM matrix / deformation grid
     method/     rigid, demons, bspline, soft_demons, common  (SimpleITK algorithms)
+                _demons_torch: PyTorch port of demons, optional (backend="torch"),
+                               plus metric="mind" (MIND-SSC demons, MR <-> CT)
+                _stochastic_rigid: rigid_registration's default algorithm ("stochastic"),
+                               the library's own MI rigid; numpy, or the C++ core
+                _rigid_core: ctypes binding of that core (csrc/rigid_core.cpp)
     pipeline/   registration_pipeline + preprocessing helpers
   dose/     RTDOSE: RTDoseBuilder, sitk_transform.py (get_dose_image)
   ct/       CT Image: CTBuilder
   utils/    series loading, coordinate transforms, SimpleITK conversion, check_iod
     sitk_image_process/  bilateral/median denoise, N4 bias correction — importable
                          only from this subpackage, not re-exported by utils
+csrc/       rigid_core.cpp: the C++ core of the default rigid, a plain C ABI shared library
+            built by CMakeLists.txt (scikit-build-core) into pydicomrt/reg/method/ and loaded
+            through ctypes, so wheels are py3-none-<platform>: one per platform serves every
+            Python. .github/workflows/publish-pypi.yml builds them with cibuildwheel on every
+            PR into and push to main, and publishes to PyPI when main has a version PyPI lacks
+            -- so releasing is bumping `version` in pyproject.toml and merging. Releases go
+            through it, not a local build, which would ship only this machine's platform.
 test/
   synthetic.py        in-memory DICOM/phantom builders (no patient data)
   conftest.py         fixtures; pins SimpleITK to one thread
   test_*_conventions.py  guardrails, not feature tests — see "Conventions the suite enforces"
   real_data/          opt-in tests against real clinical DICOM, skipped when absent
-example/              01–04 are verified and standalone; the README snippets come from these.
+example/              01–05 are verified and standalone; the README snippets come from these.
+                      05 (MR -> CT, metric="mind") needs [gpu]; without torch it prints the
+                      install hint and exits 0.
                       rs_example_*.py are 0.8-style and read `example/data/`, which is not
                       in the repo — they fail on a clean checkout. Do not cite them.
 docs/user-guide.md    task-by-task manual: parameters, errors, 0.8 -> 0.9 migration
@@ -52,17 +66,26 @@ placeholder `main()`. Import from the subpackages: `from pydicomrt.rs import ...
 
 ```bash
 pip install -e ".[dev]"
-pytest                                    # ~1000 tests, ~35 s
-pytest -m slow                            # 9 full-size registrations, tens of minutes
-python example/01_rtstruct_from_mask.py   # 01–04 run standalone
+pytest                                    # ~1080 tests, ~50 s
+pytest -m slow                            # 8 real-data / full-size tests, ~1.5 min
+python example/01_rtstruct_from_mask.py   # 01–05 run standalone
 python docs/generate_api_reference.py     # after any public docstring change
 ```
 
-Counts are parametrised, so the number is per test *case*: 1001 collected by default,
-992 passing here plus 9 skips from `test_docstring_conventions.py` opting out of parameter
-checks for exception classes and no-argument callables — those skips are expected. Without
-`testdata/` another 33 (all of `test/real_data`) skip instead of running. `-m slow` is 8
-real-data tests plus one synthetic B-spline accuracy test.
+Counts are parametrised, so the number is per test *case*: 1081 collected by default, of
+which 9 skip in `test_docstring_conventions.py` opting out of parameter checks for exception
+classes and no-argument callables — those skips are expected. Without `testdata/` another 33
+(all of `test/real_data`) skip instead of running. `-m slow` is 7 real-data tests plus one
+synthetic B-spline accuracy test.
+
+`test/reg/test_demons_torch.py` needs PyTorch (`pip install -e ".[dev,gpu]"`): without it
+33 of its cases skip, and with torch but no CUDA 16 do. Those skips are expected too.
+`test/reg/test_rigid_stochastic.py` skips 3 parity/thread cases when the compiled core was not
+built (an install without a C++ compiler); its other cases run on numpy either way.
+
+`pip install -e .` compiles `csrc/rigid_core.cpp` once, into site-packages; the editable
+install does not watch it. After editing the C++, run `pip install -e .` again, or the tests
+keep exercising the old library.
 
 Real-data tests need `PYDICOMRT_TESTDATA` (or a `testdata/` directory). They skip cleanly
 when it is absent — a skip there is not a failure.
@@ -206,6 +229,58 @@ reads as a CT. Pass `default_value` explicitly for MR, PET, or preprocessed imag
 `InstanceNumber`. An unsorted series still produces a valid-looking volume — just flipped
 in z, with every contour and registration built on it inheriting the flip.
 
+### PyTorch is optional
+
+`torch` is in the `[gpu]` extra, not the core dependencies — it is a multi-gigabyte install
+most users never need. Only `reg/method/_demons_torch.py` imports it, and only
+`demons_registration(backend="torch")` imports that module, lazily. Never add a module-level
+`import torch` anywhere else: `test_default_backend_never_imports_torch` runs a fresh
+interpreter to catch it.
+
+The torch backend is a port of ITK's FastSymmetricForces demons down to boundary handling,
+`itk::GaussianOperator` kernels, the measured `SmoothingRecursiveGaussian` response and the
+`MaximumRMSError` early stop — skipping any of them looks fine at the default schedule and
+drifts by millimetres at long ones. A change to the SimpleITK demons path needs the same change
+there; the parity tests in `test_demons_torch.py` will say so. Do not tighten those tolerances
+using large real volumes: near truncated image edges demons is chaotic on either backend, and
+SimpleITK disagrees with itself there by millimetres under 0.001 HU of input noise.
+
+`metric="mind"` lives in the same module but is *not* a port and has no SimpleITK twin. It
+deliberately departs from ITK's multiscale scheme: one displacement field is carried through
+all levels and smoothed as a whole every iteration, instead of a refinement per level composed
+onto a frozen total. With descriptor forces the composed scheme let coarse-level drift stand
+-- 3 mm of invented motion in the brain on undeformed MR/CT pairs against 0.6 mm. Its
+defaults differ too (`METRIC_DEFAULTS` in `demons.py`); the intensity ones invent motion with
+this metric. Its tests assert recovery of a known deformation across a non-monotonic
+intensity map, no motion on an aligned multimodal pair, and gain/offset invariance. The
+research behind the choices is in `internal/mr_ct_deform/` (not in version control).
+
+### The stochastic rigid has two implementations
+
+`rigid_registration`'s default algorithm lives in `reg/method/_stochastic_rigid.py` (numpy)
+and in `csrc/rigid_core.cpp` (C++). They must stay in step: same formulas, same counter-
+based random generator (point k of draw d is a pure function of seed, d, k — the numpy one
+reproduces the C++ one bit for bit), same schedule. `test_rigid_stochastic.py` compares single
+evaluations to rounding and the first iterations of a level to 1e-10. Do not compare whole
+registrations tightly: stochastic ascent amplifies a rounding difference two- to threefold per
+step, so complete runs differ by up to ~0.2 mm between backends while each is exactly
+reproducible on its own, at any thread count. A change to the C ABI bumps `API_VERSION` in
+`_rigid_core.py` and `rigid_core_api_version()` together. Nothing imports `_rigid_core` at module
+level — only `_core()` does, when the stochastic algorithm runs — so a missing or stale library
+falls back to numpy instead of breaking `import pydicomrt.reg`.
+
+The core is part of every install rather than an extra, unlike torch: it has no dependencies
+and is ~50 KB. A compiler is still optional — `CMakeLists.txt` skips the library with a warning
+when there is none, and wheel builds should set `PYDICOMRT_REQUIRE_CORE=ON` so that does not
+ship silently. It threads with its own small pool, not OpenMP: libgomp's spin-wait made a
+24-thread run ten times slower than an 8-thread one on a machine other jobs were loading.
+
+`algorithm="itk"` keeps the previous SimpleITK path; `test_rigid_registration.py` covers it.
+
+The schedule (constants at the top of the module) was chosen on public brain MR/CT and checked
+on the pelvis pair; the research, including what did *not* help (resolution matching,
+multi-start), is in `internal/rigid_opt/` (not in version control).
+
 ### pydicom version
 
 The code requires pydicom 3. `save_as(..., write_like_original=False)` is gone; use
@@ -233,22 +308,25 @@ Clip *after* applying the intercept offset, not before, or the clip bound itself
 Be straight with users about these rather than presenting registration output as final.
 
 - **`rigid_registration` on CT ↔ CBCT is not clinically validated.** Measured against a TPS
-  registration on one real pelvis pair it is `(+2.8, −7.0, −0.9)` mm out, 7.5 mm total.
-  Almost all of that is anterior-posterior, and full-FOV mutual information peaks about
-  10 mm from the clinical answer on this pair, so the metric and the TPS genuinely disagree
-  there. Narrowing it means restricting the metric to an ROI, which is not implemented.
-  One case is not a validation.
-- **`optimizer="gradient_descent"` is a fast path, not an equivalent.** It can return an
-  alignment worse than its own initialisation and still report convergence — 37.5 mm out on
-  the pair above, against 7.5 mm for the `"regular_step"` default. It costs about a minute
-  instead of nine on full-size volumes. Do not switch to it to make tests faster.
-- **Registration is only reproducible single-threaded.** ITK reduces metric values in thread
-  completion order; on the real CT/CBCT pair the thread count moved the answer by more than
-  15 mm. Set `sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(1)` when you need
-  determinism.
+  registration on one real pelvis pair it is `(+1.6, −4.7, −1.1)` mm out, 5.1 mm total
+  (elastix's default rigid: 16.7 mm). Most of that is anterior-posterior, where full-FOV
+  mutual information peaks away from the clinical answer, so the metric and the TPS
+  genuinely disagree there. Narrowing it means restricting the metric to an ROI, which is
+  not implemented. On brain MR/CT it matches elastix against a fiducial gold standard, but
+  that is one patient on 4 mm slices (RIRE training_001). One case is not a validation.
+- **`algorithm="itk"`, the previous default, is reproducible only single-threaded.** ITK
+  reduces metric values in thread completion order; on the real CT/CBCT pair the thread
+  count moved the answer by more than 15 mm. It also took nine minutes there, and its
+  `optimizer="gradient_descent"` can return an alignment worse than its own initialisation
+  while reporting convergence. The default algorithm's answer does not depend on threads.
 - **Only axial acquisitions are exercised end to end.** The geometry conventions above are
   implemented and unit-tested for oblique and anisotropic data, but no real oblique study
   has been run through the library.
+- **Default demons is single-modality.** It compares intensities; MR → CT needs
+  `metric="mind"`, and so does `registration_pipeline` (its deformable stage is demons). That
+  metric is measured on nine public brain MR/CT pairs against known synthetic deformations,
+  3D T1 only — not against a clinical ground truth. A deformable MR → CT result also hides
+  real change (tumour growth, oedema); for a brain target rigid is usually enough.
 
 ## If you change something
 
@@ -262,5 +340,5 @@ Be straight with users about these rather than presenting registration output as
   so editing `docs/api-reference.md` by hand loses the edit at the next run.
 - Anything user-facing: `README.md` / `docs/user-guide.md` have `_zh` mirrors. Update both,
   or they drift apart silently.
-- Anything in `example/`: `01`–`04` are the documentation. Run them.
+- Anything in `example/`: `01`–`05` are the documentation. Run them (05 with torch).
 - Do not commit patient data. `testdata/` is gitignored; keep it that way.

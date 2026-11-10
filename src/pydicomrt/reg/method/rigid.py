@@ -48,6 +48,10 @@ def rigid_registration(
     convergence_minimum_value: float = 1e-6,
     convergence_window_size: int = 10,
     max_step_size_mm: float = 2.0,
+    algorithm: str = "stochastic",
+    backend: str = "auto",
+    seed: int = 0,
+    threads=None,
     ) -> sitk.Transform:
     """
     Rigidly align a moving image to a fixed image.
@@ -64,32 +68,47 @@ def rigid_registration(
     moving_image : sitk.Image
         The image to align.
     histogram_bins : int, optional
-        Bins for Mattes mutual information. Default 100.
+        itk only. Bins for Mattes mutual information. Default 100.
     learning_rate : float, optional
-        Initial optimizer step. Default 2.0.
+        itk only. Initial optimizer step. Default 2.0.
     iterations : int, optional
-        Maximum optimizer iterations per resolution level. Default 300.
+        itk only. Maximum optimizer iterations per resolution level. Default 300.
     shrink_factors : sequence of int or None, optional
-        Downsampling factor per level, coarsest first. ``None`` gives a single-resolution
-        registration. Default ``(4, 2, 1)``.
+        itk only. Downsampling factor per level, coarsest first. ``None`` gives a
+        single-resolution registration. Default ``(4, 2, 1)``.
     smoothing_sigmas : sequence of float or None, optional
-        Gaussian sigma in mm per level, matching ``shrink_factors`` element for element.
-        Default ``(2.0, 1.0, 0.0)``.
+        itk only. Gaussian sigma in mm per level, matching ``shrink_factors`` element for
+        element. Default ``(2.0, 1.0, 0.0)``.
     optimizer : {"regular_step", "gradient_descent"}, optional
-        Default ``"regular_step"``. See Notes -- the default is slower and much more
-        reliable.
+        itk only. Default ``"regular_step"``. See Notes.
     relaxation_factor : float, optional
-        regular_step only. The step is multiplied by this whenever the gradient direction
-        reverses. Default 0.7.
+        itk regular_step only. The step is multiplied by this whenever the gradient
+        direction reverses. Default 0.7.
     min_step_mm : float, optional
-        regular_step only. Stop once the step falls below this. Default 1e-4.
+        itk regular_step only. Stop once the step falls below this. Default 1e-4.
     convergence_minimum_value : float, optional
-        gradient_descent only. Default 1e-6.
+        itk gradient_descent only. Default 1e-6.
     convergence_window_size : int, optional
-        gradient_descent only. Default 10.
+        itk gradient_descent only. Default 10.
     max_step_size_mm : float, optional
-        gradient_descent only. Upper bound on a single step in mm; 0.0 leaves it
+        itk gradient_descent only. Upper bound on a single step in mm; 0.0 leaves it
         unbounded. Default 2.0.
+    algorithm : {"stochastic", "itk"}, optional
+        ``"stochastic"`` (default) is the library's own implementation, with a fixed
+        schedule -- see Notes. ``"itk"`` is SimpleITK's ``ImageRegistrationMethod``,
+        configured by the parameters marked "itk only", which ``"stochastic"`` ignores.
+    backend : {"auto", "numpy", "cpp"}, optional
+        stochastic only. ``"cpp"`` runs the inner loops in the compiled core that ships
+        with the package, about ten times faster; ``"numpy"`` runs them in numpy. Both use
+        the same random points; rounding can still tip single points into another histogram
+        bin, which a thousand stochastic steps carry forward, so their answers differ by up
+        to about 0.2 mm. ``"auto"`` (default) uses the compiled core, or numpy in an
+        installation built from source without a C++ compiler.
+    seed : int, optional
+        stochastic only. Seed of the random sample points. Default 0.
+    threads : int or None, optional
+        stochastic with the compiled core only. ``None`` (default) takes SimpleITK's global
+        default thread count. The answer does not depend on it.
 
     Returns
     -------
@@ -102,8 +121,10 @@ def rigid_registration(
     Raises
     ------
     ValueError
-        If ``shrink_factors`` and ``smoothing_sigmas`` differ in length, or the optimizer
-        name is unknown.
+        If the algorithm, backend or optimizer name is unknown, an image is not 3D
+        (stochastic), or ``shrink_factors`` and ``smoothing_sigmas`` differ in length (itk).
+    ImportError
+        If ``backend="cpp"`` and this installation has no compiled core.
 
     See Also
     --------
@@ -113,26 +134,26 @@ def rigid_registration(
 
     Notes
     -----
-    ``"gradient_descent"`` can return a *worse* alignment than its own initialisation and
-    still report convergence: it takes an estimated first step, overshoots into a flat
-    region, and the convergence window then sees the metric stop changing. On a real
-    CT/CBCT pair it finished 37 mm from the clinical registration, almost all of it
-    superior-inferior.
+    ``"stochastic"`` follows elastix's strategy: Mattes mutual information on fresh random
+    points every iteration, adaptive stochastic gradient ascent over a four-level smoothing
+    pyramid, then a regular-step ascent on one fixed set of 500 000 points, so the answer is
+    the optimum of a single estimate rather than wherever the stochastic walk stopped. It
+    uses the exact derivative of the linear interpolant. Mean error in mm, elastix's default
+    rigid in brackets: 1.38 (1.32) against the RIRE fiducial gold standard, 1.24 (1.35) from
+    ten starts moved by up to 10 degrees and 20 mm, 0.53 (1.00) on nine SynthRAD2023 brain
+    MR/CT pairs, and 5.1 (16.7) from the TPS registration of one pelvis CT/CBCT pair. Its
+    answer does not depend on the thread count. It starts from the geometric centres
+    aligned, as ``CenteredTransformInitializer(GEOMETRY)`` does.
 
-    ``"regular_step"`` shrinks its step by ``relaxation_factor`` whenever the gradient
-    reverses, so it cannot run away from a good position. On the same pair it finished
-    7.5 mm out, with the residual concentrated where the metric itself disagrees with the
-    clinical answer. It costs roughly 8x the wall time -- about 9 minutes rather than 1 on
-    full-size volumes -- which is why the fast path is still selectable.
+    ``"itk"`` is the previous default. Its precomputed image gradient disagrees with the
+    linear interpolant on thick slices, which walked it 30 mm away from a correct start on
+    a 4 mm MR; on the pelvis pair it took about nine minutes single-threaded for 7.5 mm. It
+    is only bit-reproducible single-threaded -- ITK reduces the metric in thread-completion
+    order. Its ``optimizer="gradient_descent"`` can return an alignment worse than its own
+    initialisation and still report convergence.
 
-    Registration is only bit-reproducible single-threaded: ITK reduces the metric in
-    thread-completion order, and on that real pair the thread count moved the answer by
-    more than 15 mm. Call
-    ``sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(1)`` when you need determinism.
-
-    Starting position is estimated with ``CenteredTransformInitializer`` on the two
-    images' geometry. Resampling both onto a common grid beforehand destroys that estimate
-    -- there is then nothing to centre -- so register in the images' own grids.
+    Both register in the images' own grids: resampling both onto a common grid beforehand
+    leaves no geometry to initialise from.
 
     Examples
     --------
@@ -140,11 +161,29 @@ def rigid_registration(
     >>> registered = sitk.Resample(                                    # doctest: +SKIP
     ...     moving_image, fixed_image, transform, sitk.sitkLinear, -1000.0)
 
-    A quick preview, at the cost of reliability:
+    The previous SimpleITK algorithm:
 
     >>> transform = rigid_registration(                                # doctest: +SKIP
-    ...     fixed_image, moving_image, optimizer="gradient_descent")
+    ...     fixed_image, moving_image, algorithm="itk")
     """
+    if algorithm not in ("itk", "stochastic"):
+        raise ValueError(f"algorithm must be 'itk' or 'stochastic', got {algorithm!r}")
+    if algorithm == "stochastic":
+        if backend not in ("auto", "numpy", "cpp"):
+            raise ValueError(f"backend must be 'auto', 'numpy' or 'cpp', got {backend!r}")
+        from . import _stochastic_rigid
+
+        if threads is None:
+            threads = sitk.ProcessObject.GetGlobalDefaultNumberOfThreads()
+        rotation, translation, centre = _stochastic_rigid.register(
+            fixed_image, moving_image, seed=seed, backend=backend, threads=threads
+        )
+        centred = sitk.AffineTransform(3)
+        centred.SetCenter(centre.tolist())
+        centred.SetMatrix(rotation.ravel().tolist())
+        centred.SetTranslation(translation.tolist())
+        return to_centre_free_affine(centred)
+
     if optimizer not in ("regular_step", "gradient_descent"):
         raise ValueError(
             f"optimizer must be 'regular_step' or 'gradient_descent', got {optimizer!r}"

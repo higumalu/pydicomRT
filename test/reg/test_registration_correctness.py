@@ -252,7 +252,8 @@ def test_real_demons_result_survives_dicom_export(tmp_path):
     fixed = make_textured_phantom(size=(24, 24, 24), spacing=(1., 1.5, 2.))
     moving = sitk.Image(fixed)
     moving.SetOrigin(tuple(a + b for a, b in zip(fixed.GetOrigin(), (3., -2., 1.))))
-    rigid = rigid_registration(fixed, moving, iterations=2, shrink_factors=(1,), smoothing_sigmas=(0,))
+    rigid = rigid_registration(fixed, moving, algorithm="itk", iterations=2, shrink_factors=(1,),
+                               smoothing_sigmas=(0,))
     moving_rigid = sitk.Resample(moving, fixed, rigid, sitk.sitkLinear, -1000.)
     _, residual, field = demons_registration(fixed, moving_rigid, resolution_staging=(1,),
                                              iteration_staging=(2,), smoothing_sigmas=0)
