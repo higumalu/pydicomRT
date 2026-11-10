@@ -1800,7 +1800,7 @@ Assemble the dataset.
 #### `SpatialRegistrationBuilder.set_equipment`
 
 ```python
-set_equipment(self: ~BuilderT, manufacturer: str = 'pydicomRT', model_name: str = 'pydicomRT', device_serial_number: str = 'pydicomRT', software_versions: str = 'pydicomRT 0.9.1') -> ~BuilderT
+set_equipment(self: ~BuilderT, manufacturer: str = 'pydicomRT', model_name: str = 'pydicomRT', device_serial_number: str = 'pydicomRT', software_versions: str = 'pydicomRT 0.10.0') -> ~BuilderT
 ```
 
 Set the Enhanced General Equipment attributes.
@@ -2013,7 +2013,7 @@ the top-level FrameOfReferenceUID rather than needing an identity item to mark i
 #### `DeformableSpatialRegistrationBuilder.set_equipment`
 
 ```python
-set_equipment(self: ~BuilderT, manufacturer: str = 'pydicomRT', model_name: str = 'pydicomRT', device_serial_number: str = 'pydicomRT', software_versions: str = 'pydicomRT 0.9.1') -> ~BuilderT
+set_equipment(self: ~BuilderT, manufacturer: str = 'pydicomRT', model_name: str = 'pydicomRT', device_serial_number: str = 'pydicomRT', software_versions: str = 'pydicomRT 0.10.0') -> ~BuilderT
 ```
 
 Set the Enhanced General Equipment attributes.
