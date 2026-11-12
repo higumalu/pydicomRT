@@ -2484,6 +2484,9 @@ millimetres of motion that is not there.
   volume that does not fit, make the finest level coarser -- e.g. `isotropic_resample=True`
   with `resolution_staging=(8, 4, 1.5)` -- the returned field is still on the fixed grid.
   Running out raises `torch.OutOfMemoryError` with an estimate.
+- RAM for `backend="simpleitk"` also follows the finest level, at roughly 150 bytes per
+  voxel -- about 6 GB for 512 x 512 x 160, most of it inside ITK's demons filter. The same
+  coarser finest level is the remedy: at 2 mm that volume needs 2.5 GB.
 - Iterations are best spent at the finest level: on synthetic tests, raising the coarse
   levels' counts made the result worse, raising the finest level's made it better.
 - `metric="mind"` carries one displacement field through all pyramid levels instead of

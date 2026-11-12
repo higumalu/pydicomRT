@@ -478,6 +478,10 @@ registration_pipeline(fixed_image, moving_image,
   `isotropic_resample=True, resolution_staging=(8, 4, 1.5)` 後只用 5.2 GB、3.7 秒（24 執行緒
   要 36.7 秒），準確度相同，回傳的形變場仍在 fixed 格點上。記憶體不足時會丟出附帶預估值的
   `torch.OutOfMemoryError`。
+- **`backend="simpleitk"` 的 RAM** 一樣取決於最細一層，每個 voxel 約 150 bytes —— 512 × 512 ×
+  160 的 CT 約 6 GB，大部分花在 ITK 的 demons filter 裡。RAM 不夠的電腦用同樣的方式把最細一層
+  變粗：改成 2 mm（`isotropic_resample=True, resolution_staging=(8, 4, 2)`）後同一組 CT 只要
+  2.5 GB，其中 2 GB 是回傳的 transform 和形變場，兩者都是全解析度的 `float64`。
 - **多出來的迭代要加在最細一層。** 在真實 CT 加上已知合成形變的測試裡，每一層都加會變差 ——
   預設 `(10, 10, 10)` 是 1.15 mm，`(100, 100, 100)` 是 4.45 mm —— 只加最後一層則變好：
   `(10, 10, 100)` 是 0.55 mm。兩個 backend 都是如此，GPU 只是讓長排程變得負擔得起。
@@ -639,6 +643,7 @@ REG；匯出方式和 CT 對 CT 相同。
 | `ImportError: backend='torch' needs PyTorch` | `pip install "pydicomrt[gpu]"` |
 | `ImportError: backend='cpp' needs the compiled core` | pydicomrt 是在沒有 C++ 編譯器的環境從原始碼安裝的。改裝 wheel，或在有 C++17 編譯器的環境重裝；在那之前 `backend="auto"` 會用 numpy |
 | `backend="torch"` 丟出 `torch.OutOfMemoryError` | 最細一層對這張顯卡太大。用 `isotropic_resample=True, resolution_staging=(8, 4, 1.5)` 把它變粗（`metric="mind"` 用 `(6, 3, 1.5)`） |
+| `demons_registration` 時出現 `MemoryError` 或程序被系統砍掉 | 最細一層放不進 RAM（每個 voxel 約 150 bytes）。用 `isotropic_resample=True, resolution_staging=(8, 4, 2)` 把它變粗；回傳的形變場仍在 fixed 格點上 |
 | `metric='mind' runs on backend='torch' only` | 加上 `backend="torch"`；MIND 沒有 SimpleITK 的實作 |
 | MR 對到 CT 後變形扭曲，不該動的地方動了數毫米 | 在多模態配對上用了預設的 intensity metric。改用 `metric="mind"` |
 

@@ -72,7 +72,7 @@ python example/01_rtstruct_from_mask.py   # 01–05 run standalone
 python docs/generate_api_reference.py     # after any public docstring change
 ```
 
-Counts are parametrised, so the number is per test *case*: 1081 collected by default, of
+Counts are parametrised, so the number is per test *case*: 1087 collected by default, of
 which 9 skip in `test_docstring_conventions.py` opting out of parameter checks for exception
 classes and no-argument callables — those skips are expected. Without `testdata/` another 33
 (all of `test/real_data`) skip instead of running. `-m slow` is 7 real-data tests plus one

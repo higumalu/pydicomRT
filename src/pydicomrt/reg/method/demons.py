@@ -80,108 +80,90 @@ def multiscale_demons(
     -----
     - Uses Gaussian smoothing at each scale to stabilize registration.
     - The final DVF is smoothed at each iteration and accumulated across levels.
-    - Pixel type of DVF is constrained to sitkVectorFloat64 for compatibility
-      with Demons filters in SimpleITK.
+    - The DVF is accumulated as sitkVectorFloat32 and returned as sitkVectorFloat64, the type
+      SimpleITK's DisplacementFieldTransform requires.
     """
     if default_value is None:
         default_value = -1000.0 if np.min(sitk.GetArrayViewFromImage(moving_image)) <= -1000 else 0.0
-    # Lists to hold multi-resolution fixed and moving images
-    fixed_images = []
-    moving_images = []
-
-    # Construct the image pyramid: apply smoothing + resampling per scale
-    for resolution, smoothing_sigma in zip(resolution_staging, smoothing_sigmas):
-        isotropic_voxel_size_mm = None
-        shrink_factor = None
-
-        # Choose between isotropic voxel resampling or shrink factor
-        if isotropic_resample:
-            isotropic_voxel_size_mm = resolution
-        else:
-            shrink_factor = resolution
-
-        # Resample fixed image
-        fixed_images.append(
-            smooth_and_resample(
-                fixed_image,
-                isotropic_voxel_size_mm=isotropic_voxel_size_mm,
-                shrink_factor=shrink_factor,
-                smoothing_sigma=smoothing_sigma,
-                interpolator=interp_order,
-            )
+    # The accumulated DVF is held as float32. Only the demons filter and DisplacementFieldTransform
+    # need float64, and a full-resolution vector field is the largest thing held here: 12 rather
+    # than 24 bytes per voxel, at a rounding error of ~1e-5 mm. Every step warps with _warp,
+    # which takes the field directly -- Resample would need a DisplacementFieldTransform, i.e. a
+    # float64 copy of it.
+    field_type = sitk.sitkVectorFloat32
+    if initial_displacement_field is not None:
+        dvf_total = sitk.Cast(initial_displacement_field, field_type)
+    elif initial_transform:
+        dvf_total = sitk.TransformToDisplacementField(
+            initial_transform,
+            field_type,
+            fixed_image.GetSize(),
+            fixed_image.GetOrigin(),
+            fixed_image.GetSpacing(),
+            fixed_image.GetDirection(),
         )
+    else:
+        dvf_total = None  # zero, created on the coarsest grid below
 
-        # Resample moving image
-        moving_images.append(
-            smooth_and_resample(
-                moving_image,
-                isotropic_voxel_size_mm=isotropic_voxel_size_mm,
-                shrink_factor=shrink_factor,
-                smoothing_sigma=smoothing_sigma,
-                interpolator=interp_order,
-            )
+    # Multi-scale loop, coarsest → finest. Each level's images are built when the level runs
+    # rather than as a pyramid up front, so the full-size ones are not held throughout.
+    for resolution, smoothing_sigma, iters in zip(
+        resolution_staging, smoothing_sigmas, iteration_staging, strict=True
+    ):
+        # `resolution` is an isotropic voxel size (mm) or a shrink factor
+        level = dict(
+            isotropic_voxel_size_mm=resolution if isotropic_resample else None,
+            shrink_factor=None if isotropic_resample else resolution,
+            smoothing_sigma=smoothing_sigma,
+            interpolator=interp_order,
         )
-
-    # Initialize displacement field
-    if initial_displacement_field is None:
-        if initial_transform:
-            # Convert transform into a displacement field image
-            initial_displacement_field = sitk.TransformToDisplacementField(
-                initial_transform,
-                sitk.sitkVectorFloat64,
-                fixed_image.GetSize(),
-                fixed_image.GetOrigin(),
-                fixed_image.GetSpacing(),
-                fixed_image.GetDirection(),
-            )
-        else:
-            # Create an empty displacement field image matching fixed_image size
-            # Use generic constructor that works for any dimension
-            size_tuple = fixed_image.GetSize()
-            initial_displacement_field = sitk.Image(size_tuple, sitk.sitkVectorFloat64, fixed_image.GetDimension())
-            # Copy metadata (origin, spacing, direction) from fixed_image
-            initial_displacement_field.CopyInformation(fixed_image)
-    # Initialize total deformation vector field (DVF) aligned to fixed image
-    dvf_total = sitk.Resample(sitk.Cast(initial_displacement_field, sitk.sitkVectorFloat64), fixed_image)
-
-    # Multi-scale loop: process from coarsest → finest resolution
-    for i in range(len(fixed_images)):
-        f_image = fixed_images[i]
-        m_image = moving_images[i]
+        f_image = smooth_and_resample(fixed_image, **level)
         if regularization_kernel_mm is not None:
             registration_algorithm.SetStandardDeviations(
                 (np.asarray(regularization_kernel_mm) / np.asarray(f_image.GetSpacing())).tolist()
             )
 
         # Resample DVF to current resolution
-        dvf_total = sitk.Resample(dvf_total, f_image)
+        if dvf_total is None:
+            dvf_total = sitk.Image(f_image.GetSize(), field_type, f_image.GetDimension())
+            dvf_total.CopyInformation(f_image)
+        else:
+            dvf_total = sitk.Resample(dvf_total, f_image)
 
-        # Convert DVF into a transform and warp the moving image
-        tfm_total = sitk.DisplacementFieldTransform(sitk.Cast(dvf_total, sitk.sitkVectorFloat64))
-        m_image = sitk.Resample(m_image, f_image, tfm_total, interp_order, float(default_value))
-
-        # Configure number of iterations at this scale
-        iters = iteration_staging[i]
+        # Warp the moving image through the DVF and run demons at this scale
+        m_image = _warp(
+            smooth_and_resample(moving_image, **level), dvf_total, f_image, interp_order, float(default_value)
+        )
         registration_algorithm.SetNumberOfIterations(iters)
-
-        # Run demons registration at current scale
         dvf_iter = registration_algorithm.Execute(f_image, m_image)
 
         # Moving was warped through T; the refinement D therefore gives T(D(x)).
         # u_total(x) = v(x) + u(x + v(x)), not u(x) + v(x + u(x)).
-        refinement = sitk.DisplacementFieldTransform(sitk.Cast(sitk.Image(dvf_iter), sitk.sitkVectorFloat64))
-        dvf_total = dvf_iter + sitk.Resample(dvf_total, f_image, refinement, sitk.sitkLinear)
+        dvf_total = _warp(dvf_total, dvf_iter, f_image, sitk.sitkLinear, 0.0)
+        dvf_total += sitk.Cast(dvf_iter, field_type)
 
         # Regularize/smooth the DVF
         sigma_mm = np.asarray(registration_algorithm.GetStandardDeviations()) * np.asarray(f_image.GetSpacing())
         # The filter takes voxel sigmas; the standalone Gaussian takes physical mm.
         dvf_total = sitk.SmoothingRecursiveGaussian(dvf_total, sigma_mm.tolist())
-        dvf_total = sitk.Cast(dvf_total, sitk.sitkVectorFloat64)
 
     # Resample final DVF to fixed image grid
     dvf_total = sitk.Resample(dvf_total, fixed_image)
 
-    return dvf_total
+    return sitk.Cast(dvf_total, sitk.sitkVectorFloat64)
+
+
+def _warp(image, displacement_field, reference, interpolator, default_value):
+    """``image`` sampled at ``x + displacement_field(x)`` for every point ``x`` of ``reference``.
+
+    The same as ``sitk.Resample`` through a ``DisplacementFieldTransform`` of the field, without
+    the float64 copy that transform requires.
+    """
+    warp = sitk.WarpImageFilter()
+    warp.SetOutputParameteresFromImage(reference)  # sic: SimpleITK's spelling
+    warp.SetInterpolator(int(interpolator))
+    warp.SetEdgePaddingValue(default_value)
+    return warp.Execute(image, displacement_field)
 
 
 
@@ -324,6 +306,9 @@ def demons_registration(
       volume that does not fit, make the finest level coarser -- e.g. ``isotropic_resample=True``
       with ``resolution_staging=(8, 4, 1.5)`` -- the returned field is still on the fixed grid.
       Running out raises ``torch.OutOfMemoryError`` with an estimate.
+    - RAM for ``backend="simpleitk"`` also follows the finest level, at roughly 150 bytes per
+      voxel -- about 6 GB for 512 x 512 x 160, most of it inside ITK's demons filter. The same
+      coarser finest level is the remedy: at 2 mm that volume needs 2.5 GB.
     - Iterations are best spent at the finest level: on synthetic tests, raising the coarse
       levels' counts made the result worse, raising the finest level's made it better.
     - ``metric="mind"`` carries one displacement field through all pyramid levels instead of
@@ -494,6 +479,9 @@ def demons_registration(
             raise RuntimeError(
                 "Required helper `multiscale_demons(...)` is not defined in the current scope."
             ) from e
+    # The filter keeps its last run's buffers, about two full-resolution fields, until it is
+    # destroyed; it is not needed past this point.
+    del registration_method
 
     # ---- Build a resampler to warp the moving image using the DVF ----
     resampler = sitk.ResampleImageFilter()
