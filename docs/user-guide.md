@@ -505,6 +505,11 @@ Both scale linearly with iterations, so the ratio holds as you raise them.
   with `isotropic_resample=True, resolution_staging=(8, 4, 1.5)` it ran in 5.2 GB and 3.7 s
   (36.7 s on 24 threads) at the same accuracy, and the field still comes back on the fixed
   grid. Running out raises `torch.OutOfMemoryError` with an estimate.
+- **RAM with `backend="simpleitk"`** follows the finest level too, at roughly 150 bytes per
+  voxel — about 6 GB for a 512 × 512 × 160 CT, most of it inside ITK's demons filter. On a
+  machine with less, coarsen the finest level the same way: at 2 mm
+  (`isotropic_resample=True, resolution_staging=(8, 4, 2)`) that CT needs 2.5 GB, of which
+  2 GB is the returned transform and field, which are full-resolution `float64`.
 - **Spend extra iterations at the finest level.** On known synthetic deformations of a real
   CT, raising every level's count made the result worse — 1.15 mm at the default
   `(10, 10, 10)`, 4.45 mm at `(100, 100, 100)` — while raising only the last improved it:
@@ -686,6 +691,7 @@ One case is not a validation. Check the residual against your own tolerance.
 | `ImportError: backend='torch' needs PyTorch` | `pip install "pydicomrt[gpu]"` |
 | `ImportError: backend='cpp' needs the compiled core` | pydicomrt was built from source without a C++ compiler. Install a wheel, or reinstall with a C++17 compiler; `backend="auto"` runs on numpy meanwhile |
 | `torch.OutOfMemoryError` from `backend="torch"` | The finest pyramid level is too big for the card. Coarsen it with `isotropic_resample=True, resolution_staging=(8, 4, 1.5)` (`(6, 3, 1.5)` for `metric="mind"`) |
+| `MemoryError`, or the process is killed, during `demons_registration` | The finest pyramid level does not fit in RAM (~150 bytes per voxel). Coarsen it with `isotropic_resample=True, resolution_staging=(8, 4, 2)`; the field still comes back on the fixed grid |
 | `metric='mind' runs on backend='torch' only` | Add `backend="torch"`; MIND has no SimpleITK implementation |
 | MR registered to CT is distorted, several mm of motion where none should be | The default intensity metric on a multimodal pair. Use `metric="mind"` |
 

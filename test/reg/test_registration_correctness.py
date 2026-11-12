@@ -14,7 +14,7 @@ from pydicomrt.reg import (
     affine_to_homogeneous_matrix, get_spatial_registrations,
     get_deformable_registrations, check_spatial_reg_iod, check_deformable_reg_iod,
 )
-from pydicomrt.reg.method.demons import multiscale_demons, demons_registration
+from pydicomrt.reg.method.demons import _warp, multiscale_demons, demons_registration
 from pydicomrt.reg.pipeline.preprocessing import (
     crop_image_to_extent, get_image_physical_extent, align_image_extents,
     create_reference_image_from_extent,
@@ -173,6 +173,32 @@ def test_demons_refines_existing_mapping_in_correct_order():
     transform = sitk.DisplacementFieldTransform(result)
     # D shifts y by 1, then T shifts x by 0.1 * the updated y.
     assert transform.TransformPoint((8., 16., 24.)) == pytest.approx((9.7, 17., 24.), abs=1e-5)
+
+
+@pytest.mark.parametrize("interpolator", [sitk.sitkLinear, sitk.sitkNearestNeighbor, sitk.sitkBSpline])
+@pytest.mark.parametrize("rotated", [False, True])
+def test_warp_matches_resampling_through_a_displacement_transform(interpolator, rotated):
+    # multiscale_demons warps with _warp to avoid the float64 copy a DisplacementFieldTransform
+    # needs; the two must stay the same mapping, off-grid and out of bounds included.
+    rng = np.random.default_rng(0)
+    direction = sitk.Euler3DTransform((0, 0, 0), 0.2, -0.1, 0.3).GetMatrix() if rotated else np.eye(3).ravel().tolist()
+    image = sitk.GetImageFromArray(rng.normal(size=(20, 24, 28)).astype(np.float32))
+    image.SetSpacing((0.9, 1.1, 2.0))
+    image.SetDirection(direction)
+    reference = sitk.Image([25, 21, 17], sitk.sitkFloat32)
+    reference.SetSpacing((1.0, 1.2, 2.2))
+    reference.SetOrigin((0.7, 0.7, 0.7))
+    reference.SetDirection(direction)
+    field = sitk.GetImageFromArray(rng.normal(scale=2, size=(17, 21, 25, 3)), isVector=True)
+    field.CopyInformation(reference)
+
+    expected = sitk.Resample(image, reference, sitk.DisplacementFieldTransform(sitk.Image(field)), interpolator, -7.0)
+    warped = _warp(image, field, reference, interpolator, -7.0)
+    assert sitk.GetArrayFromImage(warped) == pytest.approx(sitk.GetArrayFromImage(expected), abs=1e-6)
+    assert (sitk.GetArrayFromImage(expected) == -7.0).any()  # the case does leave the image
+
+    single = _warp(image, sitk.Cast(field, sitk.sitkVectorFloat32), reference, interpolator, -7.0)
+    assert sitk.GetArrayFromImage(single) == pytest.approx(sitk.GetArrayFromImage(expected), abs=1e-4)
 
 
 def test_demons_handles_different_input_grids():
