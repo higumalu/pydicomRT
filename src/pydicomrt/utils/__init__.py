@@ -7,6 +7,7 @@ from .image_series_loader import (
 
 from .coordinate_transform import (
     InvalidImageOrientationError,
+    NonUniformSliceSpacingWarning,
     apply_transformation_to_3d_points,
     get_patient_to_pixel_transformation_matrix,
     get_pixel_to_patient_transformation_matrix,
@@ -31,6 +32,7 @@ __all__ = [
     "sort_image_series",
 
     "InvalidImageOrientationError",
+    "NonUniformSliceSpacingWarning",
     "get_slice_directions",
     "get_slice_position",
     "get_spacing_between_slices",

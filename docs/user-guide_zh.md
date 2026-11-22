@@ -93,6 +93,44 @@ image = image_series_to_sitk_image(series)              # -> sitk.Image，已套
 
 轉換時會套用 rescale slope 與 intercept，所以 `sitk.Image` 是真實單位。
 
+### 切片間距不一致
+
+函式庫把第 `i` 片放在「第一片 + i × 平均間距」的位置。切片間距不一致時 —— 缺片、重複，或
+掃描中途改變間距 —— 這會把切片放錯位置：缺一片時最多偏半片，5 mm 和 2.5 mm 混在一起的序列
+可以偏到數公分。影像照樣載得進來、看起來也正常，所以發生時會有
+`NonUniformSliceSpacingWarning` 指出問題和位置：
+
+```
+NonUniformSliceSpacingWarning: slice spacing is not uniform, and slices are placed as if it
+were the mean, 3.600 mm: 1 of 5 slice gaps differ from the usual 3.000 mm: slices 2 and 3
+are 6.000 mm apart (1 slice missing). Read the image with slice_spacing="resample" to place
+it correctly
+```
+
+某個間距和序列的間距中位數相差超過 1 % 或 0.01 mm（取較大者）才算不一致；掃描儀寫入時的
+捨入誤差不會觸發警告。有兩種處理方式：
+
+```python
+import warnings
+from pydicomrt.utils import NonUniformSliceSpacingWarning
+
+# 把影像放在正確的位置：依每片的真實位置內插成等間距。
+image = image_series_to_sitk_image(series, slice_spacing="resample")
+
+# 或者直接拒絕這種序列。
+warnings.simplefilter("error", NonUniformSliceSpacingWarning)
+```
+
+`"resample"` 沿切片法向量做線性內插，間距取序列裡最小的那個，所以缺的那片會由相鄰兩片補出來
+—— 那一片是估計值，不是資料 —— 而混合間距的序列保有最細那段的解析度。重複的切片會被丟掉。
+間距一致的序列用 `"resample"` 不會有任何改變。
+
+重新取樣後的影像不再是一個 DICOM 檔對應一片，所以它適合用在註冊和檢視，不能拿來做遮罩：
+`RTStructBuilder.add_roi` 要的是每個 DICOM 切片對應一片遮罩。它用每片輪廓所引用的那張切片
+自己的位置和方向來放置輪廓，所以不論序列間距是否一致、有沒有機架傾斜，輪廓都落在所屬影像的
+平面上。反方向則不是：`calc_image_series_affine_mapping`（`rtstruct_to_masks` 用的格點）
+假設間距一致，所以在這種序列上，不規則處之後的遮罩會落在錯的切片上，它也會發出同樣的警告。
+
 需要分開拿各部分，或想把自己的體資料放到某序列的幾何上：
 
 ```python
@@ -655,6 +693,8 @@ REG；匯出方式和 CT 對 CT 相同。
 - **平面內被拉長或壓扁** —— 某處把 row/column 間距交換了。`PixelSpacing` 是 `[row, column]`，
   SimpleITK spacing 是 `(x, y, z)`。
 - **z 軸鏡像** —— 序列沒有沿切片法向量排序。
+- **沿切片方向偏了幾毫米，而且偏移量隨位置改變** —— 切片間距不一致；看有沒有
+  `NonUniformSliceSpacingWarning`，並改用 `slice_spacing="resample"` 讀取。
 - **病人外圍多一層軟組織殼** —— 補值用了 0 而不是 -1000。
 
 ---

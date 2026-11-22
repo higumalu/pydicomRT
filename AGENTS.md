@@ -66,14 +66,14 @@ placeholder `main()`. Import from the subpackages: `from pydicomrt.rs import ...
 
 ```bash
 pip install -e ".[dev]"
-pytest                                    # ~1080 tests, ~50 s
+pytest                                    # ~1130 tests, ~75 s
 pytest -m slow                            # 8 real-data / full-size tests, ~1.5 min
 python example/01_rtstruct_from_mask.py   # 01–05 run standalone
 python docs/generate_api_reference.py     # after any public docstring change
 ```
 
-Counts are parametrised, so the number is per test *case*: 1087 collected by default, of
-which 9 skip in `test_docstring_conventions.py` opting out of parameter checks for exception
+Counts are parametrised, so the number is per test *case*: 1134 collected by default, of
+which 12 skip in `test_docstring_conventions.py` opting out of parameter checks for exception
 classes and no-argument callables — those skips are expected. Without `testdata/` another 33
 (all of `test/real_data`) skip instead of running. `-m slow` is 7 real-data tests plus one
 synthetic B-spline accuracy test.
@@ -228,6 +228,25 @@ reads as a CT. Pass `default_value` explicitly for MR, PET, or preprocessed imag
 `load_sorted_image_series()` sorts along the slice normal. Do not assume filename order or
 `InstanceNumber`. An unsorted series still produces a valid-looking volume — just flipped
 in z, with every contour and registration built on it inheriting the flip.
+
+### Slice spacing
+
+Geometry assumes evenly spaced slices: slice `i` sits at `first + i × mean spacing`
+(`get_spacing_between_slices`, the one place it is measured). A series with a missing or
+duplicated slice, or mixed spacings, therefore loads with its slices misplaced. That is kept
+for compatibility, and `NonUniformSliceSpacingWarning` reports it — past 1 % or 0.01 mm from
+the median gap, so scanner rounding is silent. `image_series_to_sitk_image(series,
+slice_spacing="resample")` interpolates from the true positions instead; its image no longer
+maps one-to-one to the DICOM slices, so it is for registration, not for anything that
+references slices.
+
+Mask -> contour (`rs/make_contour_sequence.py`) does not use the series-wide matrix: each
+contour is placed by the slice whose UID it carries, from that slice's own position and
+orientation (`_slice_pixel_to_patient_matrix`). A TPS drops contours that are not in the plane
+of their referenced image, and the series matrix puts them off it on uneven or gantry-tilted
+series. Keep it per-slice. Not fixed: the reverse, `rs/rs_to_volume.py`, rasterises onto a
+regular grid at the *smallest* neighbour gap, so on an uneven series masks land on the wrong
+slices and the mask grid disagrees with the image grid; it warns.
 
 ### PyTorch is optional
 

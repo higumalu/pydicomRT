@@ -21,6 +21,8 @@ import SimpleITK as sitk
 from pydicom.dataset import Dataset
 
 from pydicomrt.utils.coordinate_transform import (
+    _slice_positions,
+    _uniform_slice_plan,
     get_slice_directions,
     get_spacing_between_slices,
 )
@@ -146,8 +148,40 @@ def sitk_spacing_to_pixel_spacing(spacing: Sequence[float]) -> List[float]:
 # Series -> SimpleITK
 # --------------------------------------------------------------------------------------- #
 
+#: What the series readers accept as ``slice_spacing``.
+SLICE_SPACING_MODES = ("mean", "resample")
+
+
+def _resample_to_uniform_slices(volume: np.ndarray, positions: np.ndarray) -> Tuple[np.ndarray, float]:
+    """
+    ``volume`` (one slice per entry of ``positions``, ascending) on an even stack.
+
+    Returns the new volume, in the dtype of the old, and its slice spacing. Slices are
+    interpolated linearly between their two neighbours; one that lands on an input slice is
+    that slice.
+    """
+    keep, targets, spacing = _uniform_slice_plan(positions)
+    sources = positions[keep]
+    if len(targets) == len(sources) and np.array_equal(targets, sources):
+        return (volume if len(keep) == len(volume) else volume[keep]), spacing
+
+    resampled = np.empty((len(targets),) + volume.shape[1:], dtype=volume.dtype)
+    below = np.clip(np.searchsorted(sources, targets, side="right") - 1, 0, len(sources) - 2)
+    weights = np.clip((targets - sources[below]) / (sources[below + 1] - sources[below]), 0.0, 1.0)
+    for index, (lower, weight) in enumerate(zip(below, weights)):
+        if weight < 1e-6:
+            resampled[index] = volume[keep[lower]]
+        elif weight > 1 - 1e-6:
+            resampled[index] = volume[keep[lower + 1]]
+        else:
+            mixed = (1 - weight) * volume[keep[lower]] + weight * volume[keep[lower + 1]]
+            resampled[index] = np.rint(mixed) if np.issubdtype(volume.dtype, np.integer) else mixed
+    return resampled, spacing
+
+
 def parse_image_series(
     image_series: List[Dataset],
+    slice_spacing: str = "mean",
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Read volume and geometry out of a DICOM image series.
@@ -159,6 +193,15 @@ def parse_image_series(
     ----------
     image_series : list[Dataset]
         Slices of one series.
+    slice_spacing : {"mean", "resample"}, default = "mean"
+        What to do when the slices are not evenly spaced -- a missing or duplicated slice,
+        or an acquisition whose spacing changes part-way. ``"mean"`` stacks the slices as
+        they are and spaces them by the mean, which puts them in the wrong place, and
+        issues :class:`NonUniformSliceSpacingWarning`. ``"resample"`` interpolates
+        linearly along the slice normal onto an even stack at the smallest spacing in the
+        series, from each slice's true position, so the image is placed correctly; its
+        slices then no longer correspond one-to-one to the DICOM slices. On an evenly
+        spaced series the two are identical.
 
     Returns
     -------
@@ -171,11 +214,23 @@ def parse_image_series(
     direction : np.ndarray
         3x3, axis directions in columns.
 
+    Raises
+    ------
+    ValueError
+        If ``slice_spacing`` is not one of the two modes.
+
+    Warns
+    -----
+    NonUniformSliceSpacingWarning
+        With ``slice_spacing="mean"``, if the slices are not evenly spaced.
+
     Notes
     -----
-    Assumes a single, uniformly spaced series; spacing and orientation are taken from the
-    first slice.
+    Assumes a single series; in-plane spacing and orientation are taken from the first
+    slice.
     """
+    if slice_spacing not in SLICE_SPACING_MODES:
+        raise ValueError(f"slice_spacing must be one of {SLICE_SPACING_MODES}, got {slice_spacing!r}")
     image_series = sort_image_series(image_series)
     first_slice = image_series[0]
 
@@ -184,15 +239,18 @@ def parse_image_series(
     intercept = getattr(first_slice, "RescaleIntercept", 0)
     volume = volume * slope + intercept
 
-    slice_spacing = get_spacing_between_slices(image_series)
+    if slice_spacing == "resample":
+        volume, slice_distance = _resample_to_uniform_slices(volume, _slice_positions(image_series))
+    else:
+        slice_distance = get_spacing_between_slices(image_series)
     origin = np.array([float(v) for v in first_slice.ImagePositionPatient])
-    spacing = get_sitk_spacing(first_slice, slice_spacing)
+    spacing = get_sitk_spacing(first_slice, slice_distance)
     direction = get_sitk_direction(first_slice)
 
     return volume, origin, spacing, direction
 
 
-def image_series_to_sitk_image(image_series: List[Dataset]) -> sitk.Image:
+def image_series_to_sitk_image(image_series: List[Dataset], slice_spacing: str = "mean") -> sitk.Image:
     """
     Convert a DICOM image series straight to a ``sitk.Image``.
 
@@ -203,12 +261,26 @@ def image_series_to_sitk_image(image_series: List[Dataset]) -> sitk.Image:
     ----------
     image_series : list of Dataset
         Slices of one series, in any order. They are sorted along the slice normal.
+    slice_spacing : {"mean", "resample"}, default = "mean"
+        What to do when the slices are not evenly spaced -- a missing or duplicated slice,
+        or an acquisition whose spacing changes part-way. ``"mean"`` stacks the slices as
+        they are and spaces them by the mean, which puts them in the wrong place, and
+        issues :class:`NonUniformSliceSpacingWarning`. ``"resample"`` interpolates
+        linearly along the slice normal onto an even stack at the smallest spacing in the
+        series, from each slice's true position, so the image is placed correctly; its
+        slices then no longer correspond one-to-one to the DICOM slices. On an evenly
+        spaced series the two are identical.
 
     Returns
     -------
     sitk.Image
         The volume with origin, spacing and direction set, in the modality's real units
         (HU for CT -- rescale slope and intercept are applied).
+
+    Warns
+    -----
+    NonUniformSliceSpacingWarning
+        With ``slice_spacing="mean"``, if the slices are not evenly spaced.
 
     See Also
     --------
@@ -222,7 +294,7 @@ def image_series_to_sitk_image(image_series: List[Dataset]) -> sitk.Image:
     >>> image.GetSize()                                    # doctest: +SKIP
     (512, 512, 120)
     """
-    return SimpleITKImageBuilder().from_image_series(image_series)
+    return SimpleITKImageBuilder().from_image_series(image_series, slice_spacing)
 
 
 class SimpleITKImageBuilder:
@@ -389,7 +461,7 @@ class SimpleITKImageBuilder:
         self.direction = direction.reshape(3, 3)
         return self
 
-    def from_image_series(self, image_series: List[Dataset]) -> sitk.Image:
+    def from_image_series(self, image_series: List[Dataset], slice_spacing: str = "mean") -> sitk.Image:
         """
         Build directly from a DICOM image series.
 
@@ -397,6 +469,9 @@ class SimpleITKImageBuilder:
         ----------
         image_series : list of Dataset
             Slices of one series, in any order.
+        slice_spacing : {"mean", "resample"}, default = "mean"
+            As in :func:`image_series_to_sitk_image`: ``"resample"`` interpolates an
+            unevenly spaced series onto an even stack instead of spacing it by the mean.
 
         Returns
         -------
@@ -404,7 +479,7 @@ class SimpleITKImageBuilder:
             The finished image -- this shortcut calls :meth:`build` for you, so it does
             not return ``self``.
         """
-        volume, origin, spacing, direction = parse_image_series(image_series)
+        volume, origin, spacing, direction = parse_image_series(image_series, slice_spacing)
         return (
             self.set_volume(volume)
             .set_origin(origin)

@@ -19,6 +19,7 @@ library is put together see [architecture.md](architecture.md).
 - [`load_sorted_image_series`](#utilsload-sorted-image-series) <sub>func</sub> — Read a DICOM image series and return it sorted along the slice normal.
 - [`sort_image_series`](#utilssort-image-series) <sub>func</sub> — Sort slices by their position along the slice normal, ascending.
 - [`InvalidImageOrientationError`](#utilsinvalidimageorientationerror) <sub>class</sub> — ImageOrientationPatient (0020,0037) is not two orthogonal unit vectors.
+- [`NonUniformSliceSpacingWarning`](#utilsnonuniformslicespacingwarning) <sub>class</sub> — The slices of a series are not evenly spaced along the slice normal.
 - [`get_slice_directions`](#utilsget-slice-directions) <sub>func</sub> — Split ImageOrientationPatient into its three unit direction vectors.
 - [`get_slice_position`](#utilsget-slice-position) <sub>func</sub> — Position of a slice along the slice normal.
 - [`get_spacing_between_slices`](#utilsget-spacing-between-slices) <sub>func</sub> — Mean distance between slice centres, along the slice normal.
@@ -222,6 +223,31 @@ In practice this means the file is corrupt or non-conformant. The tolerance is 1
 both the dot product and the normal's length, which is loose enough for the rounding
 real scanners write and tight enough to catch a genuinely bad orientation.
 
+<a id="utilsnonuniformslicespacingwarning"></a>
+
+### `utils.NonUniformSliceSpacingWarning`
+
+```python
+NonUniformSliceSpacingWarning
+```
+
+The slices of a series are not evenly spaced along the slice normal.
+
+Issued by `get_spacing_between_slices`, and therefore by everything that turns a
+series into geometry: the pixel/patient matrices and SimpleITK conversion. The library
+places slice `i` at `first + i * mean spacing`, so on such a series -- a missing or
+duplicated slice, or an acquisition whose spacing changes part-way -- slices are put
+where they are not, by up to half a slice for one missing slice and by centimetres for
+mixed spacings. Nothing else fails; only physical positions are wrong.
+
+A gap counts as irregular when it differs from the series' median gap by more than
+1 % or 0.01 mm, whichever is larger, which passes the rounding scanners write.
+
+To get a correctly placed image, read with
+`image_series_to_sitk_image(series, slice_spacing="resample")`. To refuse such series
+outright, turn the warning into an error:
+`warnings.simplefilter("error", NonUniformSliceSpacingWarning)`.
+
 <a id="utilsget-slice-directions"></a>
 
 ### `utils.get_slice_directions`
@@ -308,11 +334,18 @@ SpacingBetweenSlices, both of which are routinely absent or wrong.
   slice normal. Exactly `1.0` for a single-slice series, which has no spacing to
   measure -- the fallback keeps the transformation matrices invertible.
 
+**Warns**
+
+- **`NonUniformSliceSpacingWarning`**
+  If the gaps between neighbouring slices are not all the same, beyond rounding. The
+  mean is still returned.
+
 **Notes**
 
 Averaging over the whole series rather than differencing neighbours means a series
 with one duplicated or missing slice still yields a usable spacing, at the cost of
-hiding the irregularity. Uniform spacing is assumed throughout the library.
+placing its slices slightly wrong. Uniform spacing is assumed throughout the library;
+the warning says when that assumption does not hold.
 
 <a id="utilsget-pixel-to-patient-transformation-matrix"></a>
 
@@ -514,7 +547,7 @@ frame-of-reference context -- cannot be driven from it.
 #### `SimpleITKImageBuilder.from_image_series`
 
 ```python
-from_image_series(self, image_series: List[pydicom.dataset.Dataset]) -> SimpleITK.SimpleITK.Image
+from_image_series(self, image_series: List[pydicom.dataset.Dataset], slice_spacing: str = 'mean') -> SimpleITK.SimpleITK.Image
 ```
 
 Build directly from a DICOM image series.
@@ -523,6 +556,10 @@ Build directly from a DICOM image series.
 
 - **`image_series`** — *list of Dataset*
   Slices of one series, in any order.
+
+- **`slice_spacing`** — *{"mean", "resample"}, default = "mean"*
+  As in `image_series_to_sitk_image`: `"resample"` interpolates an
+  unevenly spaced series onto an even stack instead of spacing it by the mean.
 
 **Returns**
 
@@ -664,7 +701,7 @@ Set the voxel data.
 ### `utils.image_series_to_sitk_image`
 
 ```python
-image_series_to_sitk_image(image_series: List[pydicom.dataset.Dataset]) -> SimpleITK.SimpleITK.Image
+image_series_to_sitk_image(image_series: List[pydicom.dataset.Dataset], slice_spacing: str = 'mean') -> SimpleITK.SimpleITK.Image
 ```
 
 Convert a DICOM image series straight to a `sitk.Image`.
@@ -677,11 +714,26 @@ entry point for reading images.
 - **`image_series`** — *list of Dataset*
   Slices of one series, in any order. They are sorted along the slice normal.
 
+- **`slice_spacing`** — *{"mean", "resample"}, default = "mean"*
+  What to do when the slices are not evenly spaced -- a missing or duplicated slice,
+  or an acquisition whose spacing changes part-way. `"mean"` stacks the slices as
+  they are and spaces them by the mean, which puts them in the wrong place, and
+  issues `NonUniformSliceSpacingWarning`. `"resample"` interpolates
+  linearly along the slice normal onto an even stack at the smallest spacing in the
+  series, from each slice's true position, so the image is placed correctly; its
+  slices then no longer correspond one-to-one to the DICOM slices. On an evenly
+  spaced series the two are identical.
+
 **Returns**
 
 - **`sitk.Image`**
   The volume with origin, spacing and direction set, in the modality's real units
   (HU for CT -- rescale slope and intercept are applied).
+
+**Warns**
+
+- **`NonUniformSliceSpacingWarning`**
+  With `slice_spacing="mean"`, if the slices are not evenly spaced.
 
 **See Also**
 
@@ -702,7 +754,7 @@ entry point for reading images.
 ### `utils.parse_image_series`
 
 ```python
-parse_image_series(image_series: List[pydicom.dataset.Dataset]) -> Tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray]
+parse_image_series(image_series: List[pydicom.dataset.Dataset], slice_spacing: str = 'mean') -> Tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray]
 ```
 
 Read volume and geometry out of a DICOM image series.
@@ -714,6 +766,16 @@ Rescale slope and intercept are applied, so the volume is in the modality's real
 
 - **`image_series`** — *list[Dataset]*
   Slices of one series.
+
+- **`slice_spacing`** — *{"mean", "resample"}, default = "mean"*
+  What to do when the slices are not evenly spaced -- a missing or duplicated slice,
+  or an acquisition whose spacing changes part-way. `"mean"` stacks the slices as
+  they are and spaces them by the mean, which puts them in the wrong place, and
+  issues `NonUniformSliceSpacingWarning`. `"resample"` interpolates
+  linearly along the slice normal onto an even stack at the smallest spacing in the
+  series, from each slice's true position, so the image is placed correctly; its
+  slices then no longer correspond one-to-one to the DICOM slices. On an evenly
+  spaced series the two are identical.
 
 **Returns**
 
@@ -729,10 +791,20 @@ Rescale slope and intercept are applied, so the volume is in the modality's real
 - **`direction`** — *np.ndarray*
   3x3, axis directions in columns.
 
+**Raises**
+
+- **`ValueError`**
+  If `slice_spacing` is not one of the two modes.
+
+**Warns**
+
+- **`NonUniformSliceSpacingWarning`**
+  With `slice_spacing="mean"`, if the slices are not evenly spaced.
+
 **Notes**
 
-Assumes a single, uniformly spaced series; spacing and orientation are taken from the
-first slice.
+Assumes a single series; in-plane spacing and orientation are taken from the first
+slice.
 
 <a id="utilsresample-to-reference-image"></a>
 
@@ -1620,6 +1692,12 @@ own.
 - **`Exception`**
   If ImageOrientationPatient is not two orthogonal unit vectors.
 
+**Warns**
+
+- **`NonUniformSliceSpacingWarning`**
+  If the slices are not evenly spaced: the grid assumes they are, so masks come out
+  on the wrong slices past the irregularity.
+
 **See Also**
 
 - [`rtstruct_to_masks`](#rsrtstruct-to-masks) — Consumes both return values.
@@ -1800,7 +1878,7 @@ Assemble the dataset.
 #### `SpatialRegistrationBuilder.set_equipment`
 
 ```python
-set_equipment(self: ~BuilderT, manufacturer: str = 'pydicomRT', model_name: str = 'pydicomRT', device_serial_number: str = 'pydicomRT', software_versions: str = 'pydicomRT 0.10.1') -> ~BuilderT
+set_equipment(self: ~BuilderT, manufacturer: str = 'pydicomRT', model_name: str = 'pydicomRT', device_serial_number: str = 'pydicomRT', software_versions: str = 'pydicomRT 0.11.0') -> ~BuilderT
 ```
 
 Set the Enhanced General Equipment attributes.
@@ -2013,7 +2091,7 @@ the top-level FrameOfReferenceUID rather than needing an identity item to mark i
 #### `DeformableSpatialRegistrationBuilder.set_equipment`
 
 ```python
-set_equipment(self: ~BuilderT, manufacturer: str = 'pydicomRT', model_name: str = 'pydicomRT', device_serial_number: str = 'pydicomRT', software_versions: str = 'pydicomRT 0.10.1') -> ~BuilderT
+set_equipment(self: ~BuilderT, manufacturer: str = 'pydicomRT', model_name: str = 'pydicomRT', device_serial_number: str = 'pydicomRT', software_versions: str = 'pydicomRT 0.11.0') -> ~BuilderT
 ```
 
 Set the Enhanced General Equipment attributes.

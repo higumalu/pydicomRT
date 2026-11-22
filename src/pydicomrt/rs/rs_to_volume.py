@@ -9,7 +9,11 @@ Coding: UTF-8
 import logging
 import numpy as np
 import cv2
-from pydicomrt.utils.coordinate_transform import apply_transformation_to_3d_points
+from pydicomrt.utils.coordinate_transform import (
+    _slice_positions,
+    _warn_if_not_uniform,
+    apply_transformation_to_3d_points,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +165,12 @@ def calc_image_series_affine_mapping(series_ds_list):
     Exception
         If ImageOrientationPatient is not two orthogonal unit vectors.
 
+    Warns
+    -----
+    NonUniformSliceSpacingWarning
+        If the slices are not evenly spaced: the grid assumes they are, so masks come out
+        on the wrong slices past the irregularity.
+
     See Also
     --------
     rtstruct_to_masks : Consumes both return values.
@@ -184,6 +194,7 @@ def calc_image_series_affine_mapping(series_ds_list):
     # check image orientation is legal
     if not np.allclose(np.dot(v_x, v_y), 0.0, atol=1e-3) or not np.allclose(np.linalg.norm(v_z), 1.0, atol=1e-3):
         raise Exception("Invalid Image Orientation (Patient) attribute")
+    _warn_if_not_uniform(_slice_positions(series_ds_list), f"the smallest gap, {z_spacing:.3f} mm")
     linear = np.identity(3, dtype=np.float32)
     linear[0, :3] = v_x / x_spacing
     linear[1, :3] = v_y / y_spacing
