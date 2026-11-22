@@ -1,6 +1,6 @@
 [project]
 name = "pydicomrt"
-version = "0.10.1"
+version = "0.11.0"
 description = "DICOM RT Structure and Registration"
 readme = "README.md"
 authors = [
