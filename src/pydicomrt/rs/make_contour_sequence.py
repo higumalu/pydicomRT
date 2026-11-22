@@ -4,7 +4,7 @@ import numpy as np
 from pydicom.dataset import Dataset
 from pydicom.sequence import Sequence
 
-from pydicomrt.utils.coordinate_transform import apply_transformation_to_3d_points, get_pixel_to_patient_transformation_matrix
+from pydicomrt.utils.coordinate_transform import _slice_pixel_to_patient_matrix, apply_transformation_to_3d_points
 from .contour_process_method import contour_process
 
 # ---------------------------------- interface ----------------------------------------- #
@@ -226,6 +226,11 @@ def volume_to_contour_list(mask_volume, image_series, ctr_config):
             cv2.CHAIN_APPROX_NONE
             )
         if cv2_contours is None or hierarchy is None: continue
+        # Each contour is placed by the slice it references, not by the series-wide matrix:
+        # that one assumes evenly spaced slices stacked along the normal, and where they are
+        # not (a missing slice, gantry tilt) it puts the contour off the plane of the image
+        # whose UID it carries.
+        transformation_matrix = _slice_pixel_to_patient_matrix(series_slice)
         for hier_index, contour in enumerate(cv2_contours):
             poly_hierarchy = hierarchy[0][hier_index][3]
             x_points, y_points = contour.T[:, 0]
@@ -235,8 +240,7 @@ def volume_to_contour_list(mask_volume, image_series, ctr_config):
                                                  low_pass_ratio=ctr_config["lowpass_ratio"])
             if len(x_points) < 3 or len(y_points) < 3: continue
             contour = np.stack([x_points, y_points]).T
-            contour = np.concatenate((np.array(contour), np.full((len(contour), 1), index)), axis=1)    # add index into contour-z-axis
-            transformation_matrix = get_pixel_to_patient_transformation_matrix(image_series)
+            contour = np.concatenate((np.array(contour), np.zeros((len(contour), 1))), axis=1)    # in-plane: no offset along the normal
             transformed_contour = apply_transformation_to_3d_points(contour, transformation_matrix)
             dicom_formatted_contour = np.ravel(transformed_contour).tolist()
             dicom_formatted_contour = [round(crood, ctr_config["ctr_precision"]) for crood in dicom_formatted_contour]

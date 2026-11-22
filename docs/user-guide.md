@@ -100,6 +100,48 @@ z, and every contour and registration built on it inherits the flip.
 
 Rescale slope and intercept are applied on conversion, so the `sitk.Image` is in real units.
 
+### Unevenly spaced slices
+
+The library places slice `i` at `first + i × mean spacing`. When the slices are not evenly
+spaced — one is missing or duplicated, or the acquisition changes spacing part-way — that
+puts them in the wrong place: by up to half a slice for one missing slice, by centimetres
+for a series that mixes 5 mm and 2.5 mm. The image still loads and looks normal, so a
+`NonUniformSliceSpacingWarning` says when it happens, and where:
+
+```
+NonUniformSliceSpacingWarning: slice spacing is not uniform, and slices are placed as if it
+were the mean, 3.600 mm: 1 of 5 slice gaps differ from the usual 3.000 mm: slices 2 and 3
+are 6.000 mm apart (1 slice missing). Read the image with slice_spacing="resample" to place
+it correctly
+```
+
+A gap is irregular when it is more than 1 % or 0.01 mm, whichever is larger, from the
+series' median gap; the rounding scanners write stays silent. Two ways to act on it:
+
+```python
+import warnings
+from pydicomrt.utils import NonUniformSliceSpacingWarning
+
+# Place the image correctly: interpolate onto an even stack from the true slice positions.
+image = image_series_to_sitk_image(series, slice_spacing="resample")
+
+# Or refuse such series outright.
+warnings.simplefilter("error", NonUniformSliceSpacingWarning)
+```
+
+`"resample"` interpolates linearly along the slice normal at the smallest spacing in the
+series, so a missing slice is filled in from its neighbours — that slice is an estimate,
+not data — and a mixed series keeps the resolution of its finest part. Duplicates are
+dropped. On an evenly spaced series `"resample"` changes nothing.
+
+The resampled image no longer has one slice per DICOM file, so it is for registration and
+viewing, not for masks: `RTStructBuilder.add_roi` takes one mask slice per DICOM slice. It
+places each contour by the slice it references — that slice's own position and orientation
+— so contours sit in the plane of their image on any series, uneven or gantry-tilted
+included. The reverse direction does not: `calc_image_series_affine_mapping`, the grid for
+`rtstruct_to_masks`, assumes even spacing, so on such a series masks land on the wrong
+slices past the irregularity, and it issues the same warning.
+
 Need the pieces separately, or a volume of your own on a series' geometry:
 
 ```python
@@ -704,6 +746,8 @@ Almost always one of the four conventions:
 - **Stretched or squashed in-plane** — row/column spacing swapped somewhere. `PixelSpacing`
   is `[row, column]`, SimpleITK spacing is `(x, y, z)`.
 - **Mirrored in z** — the series was not sorted along the slice normal.
+- **Off along the slice direction, by a few mm that vary with position** — unevenly spaced
+  slices; look for a `NonUniformSliceSpacingWarning` and read with `slice_spacing="resample"`.
 - **A soft-tissue shell around the patient** — padded with 0 instead of -1000.
 
 ---
